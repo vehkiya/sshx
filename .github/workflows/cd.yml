@@ -1,7 +1,13 @@
 name: Release Binary Assets
 
 on:
+  push:
+    branches: ["main", "master"]
   workflow_dispatch:
+
+concurrency:
+  group: cd-release
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -29,7 +35,7 @@ jobs:
         uses: PaulHatch/semantic-version@502226b17e3e242e4befd0a45690fcbb27dd1373 # v6.0.3
         with:
           change_path: "."
-          bump_each_commit: false
+          bump_each_commit: true
           tag_prefix: "v"
           major_pattern: "/!:|BREAKING CHANGE:/"
           minor_pattern: "/feat(\\(.+\\))?:/"

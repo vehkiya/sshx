@@ -1,6 +1,6 @@
 # sshx 🚀
 
-[![Main Validation](https://github.com/vehkiya/sshx/actions/workflows/main.yml/badge.svg)](https://github.com/vehkiya/sshx/actions/workflows/main.yml)
+[![Release](https://github.com/vehkiya/sshx/actions/workflows/cd.yml/badge.svg)](https://github.com/vehkiya/sshx/actions/workflows/cd.yml)
 [![CodeQL Analysis](https://github.com/vehkiya/sshx/actions/workflows/codeql.yml/badge.svg)](https://github.com/vehkiya/sshx/actions/workflows/codeql.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/vehkiya/sshx)](https://goreportcard.com/report/github.com/vehkiya/sshx)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
