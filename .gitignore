@@ -1,0 +1,26 @@
+# Binaries
+/sshx
+/ssh-add-host
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+dist/
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE & OS
+.idea/
+.vscode/
+.DS_Store
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak
+*~
