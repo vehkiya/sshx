@@ -77,9 +77,11 @@ Launch the interactive host manager simply by typing `sshx`:
 | `/` | Filter / fuzzy search hosts |
 | `Enter` | Connect to selected host immediately |
 | `a` | Add a new host (launches interactive wizard) |
+| `e` | Edit selected host (launches interactive wizard) |
 | `c` | Copy public key to remote host (`ssh-copy-id`) |
 | `d` | Delete selected host block (with confirmation prompt) |
-| `e` | Open `~/.ssh/config` directly in `$EDITOR` |
+| `E` | Open `~/.ssh/config` directly in `$EDITOR` |
+| `Tab` | Toggle host details inspector (on compact displays) |
 | `q` / `Esc` | Exit |
 
 ---
@@ -98,6 +100,9 @@ sshx add
 
 # Pre-populate connection target and alias
 sshx add admin@10.0.0.5:2202 backup-node
+
+# Interactively edit an existing SSH host
+sshx edit prod-server
 
 # List all configured SSH hosts in terminal
 sshx ls
