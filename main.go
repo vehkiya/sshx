@@ -98,6 +98,49 @@ func main() {
 			probeHostCLI(alias, homeDir)
 			return
 
+		case "update", "upgrade":
+			force := false
+			checkOnly := false
+			for _, a := range args[1:] {
+				if a == "--force" || a == "-f" {
+					force = true
+				}
+				if a == "--check" || a == "-c" {
+					checkOnly = true
+				}
+			}
+			if checkOnly {
+				rel, isNewer, err := CheckLatestRelease(Version)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+					os.Exit(1)
+				}
+				if isNewer {
+					fmt.Printf("Update available: %s -> %s (run 'sshx update' to upgrade)\n", Version, rel.TagName)
+				} else {
+					fmt.Printf("sshx is up to date (%s)\n", Version)
+				}
+				return
+			}
+			if err := PerformUpdate(Version, os.Stdout, force); err != nil {
+				fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+
+		case "check-update":
+			rel, isNewer, err := CheckLatestRelease(Version)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+				os.Exit(1)
+			}
+			if isNewer {
+				fmt.Printf("Update available: %s -> %s (run 'sshx update' to upgrade)\n", Version, rel.TagName)
+			} else {
+				fmt.Printf("sshx is up to date (%s)\n", Version)
+			}
+			return
+
 		case "edit":
 			if len(args) > 1 {
 				alias := args[1]
@@ -190,6 +233,10 @@ func main() {
 		case "edit-config", "edit":
 			openEditor(homeDir)
 
+		case "upgrade":
+			_ = PerformUpdate(Version, os.Stdout, false)
+			pausePrompt()
+
 		case "quit", "":
 			return
 		}
@@ -214,6 +261,7 @@ func printUsage() {
 	fmt.Println("  sshx edit [alias]         Edit host in wizard, or open ~/.ssh/config in $EDITOR")
 	fmt.Println("  sshx clone <alias>        Duplicate / clone an existing host")
 	fmt.Println("  sshx probe <alias>        Probe TCP reachability / ping host")
+	fmt.Println("  sshx update [--check]     Check for and install latest release update")
 	fmt.Println()
 	fmt.Println("TUI Keybindings:")
 	fmt.Println("  Enter      Connect to selected host")
@@ -226,6 +274,7 @@ func printUsage() {
 	fmt.Println("  y          Yank SSH connect command to clipboard")
 	fmt.Println("  p          Probe TCP reachability / ping host")
 	fmt.Println("  v          Toggle raw OpenSSH config view")
+	fmt.Println("  U          Upgrade sshx to latest release")
 	fmt.Println("  E          Open ~/.ssh/config in $EDITOR")
 	fmt.Println("  Tab        Toggle details inspector (on compact displays)")
 	fmt.Println("  q, Esc     Quit")

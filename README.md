@@ -47,13 +47,39 @@ Ensure `$(go env GOPATH)/bin` (typically `~/go/bin`) is in your `$PATH`.
 
 ### From Precompiled Release Binaries
 
-Download prebuilt binaries for Linux, macOS (Apple Silicon / Intel), or Windows from the [Releases page](https://github.com/vehkiya/sshx/releases).
+Download prebuilt binaries for macOS, Linux, or Windows from the [Releases page](https://github.com/vehkiya/sshx/releases).
+
+#### macOS (Apple Silicon / M-series - `arm64`)
 
 ```bash
-# Example for Linux AMD64:
-curl -sSL https://github.com/vehkiya/sshx/releases/latest/download/sshx_linux_amd64.tar.gz | tar -xz
+curl -sSL https://github.com/vehkiya/sshx/releases/latest/download/sshx_darwin_arm64.tar.gz | tar -xz --strip-components=1
 sudo mv sshx /usr/local/bin/
 ```
+
+#### macOS (Intel - `amd64`)
+
+```bash
+curl -sSL https://github.com/vehkiya/sshx/releases/latest/download/sshx_darwin_amd64.tar.gz | tar -xz --strip-components=1
+sudo mv sshx /usr/local/bin/
+```
+
+#### Linux (x86_64 / `amd64`)
+
+```bash
+curl -sSL https://github.com/vehkiya/sshx/releases/latest/download/sshx_linux_amd64.tar.gz | tar -xz --strip-components=1
+sudo mv sshx /usr/local/bin/
+```
+
+#### Linux (ARM64 / `arm64`)
+
+```bash
+curl -sSL https://github.com/vehkiya/sshx/releases/latest/download/sshx_linux_arm64.tar.gz | tar -xz --strip-components=1
+sudo mv sshx /usr/local/bin/
+```
+
+#### Windows
+
+Download `sshx_windows_amd64.zip` from the [Releases page](https://github.com/vehkiya/sshx/releases/latest), extract `sshx.exe`, and place it in your `%PATH%`.
 
 ### Build from Source
 
@@ -61,8 +87,22 @@ sudo mv sshx /usr/local/bin/
 git clone https://github.com/vehkiya/sshx.git
 cd sshx
 go build -trimpath -ldflags="-s -w" -o sshx .
-mv sshx ~/.local/bin/
+sudo mv sshx /usr/local/bin/
 ```
+
+### 🔄 Auto-Update & Upgrades
+
+Keep `sshx` up to date with the built-in self-updater:
+
+```bash
+# Check and upgrade to the latest GitHub release
+sshx update
+
+# Check if a new version is available without upgrading
+sshx update --check
+```
+
+In the interactive TUI, `sshx` checks for new releases in the background. If an update is available, an **`UPDATE`** badge appears in the top-right inspector and pressing **`U`** upgrades the binary directly in-place.
 
 ---
 
@@ -84,6 +124,7 @@ Launch the interactive host manager simply by typing `sshx`:
 | `p` | Probe TCP reachability / ping host |
 | `v` | Toggle raw OpenSSH config view |
 | `d`, `x` | Delete selected host (with in-TUI confirmation) |
+| `U` | Upgrade sshx to latest release |
 | `E` | Open `~/.ssh/config` directly in `$EDITOR` |
 | `Tab` | Toggle host details inspector (on compact displays) |
 | `q` / `Esc` | Exit |
@@ -113,6 +154,12 @@ sshx clone prod-server
 
 # Probe TCP reachability / ping host
 sshx probe prod-server
+
+# Check for updates and automatically upgrade
+sshx update
+
+# Check if a new version is available without upgrading
+sshx update --check
 
 # List all configured SSH hosts in terminal
 sshx ls

@@ -161,6 +161,21 @@ func clearStatusCmd() tea.Cmd {
 	})
 }
 
+type updateCheckMsg struct {
+	latestVersion string
+	isAvailable   bool
+}
+
+func checkUpdateCmd(currentVersion, homeDir string) tea.Cmd {
+	return func() tea.Msg {
+		latest, isNewer, err := CheckLatestReleaseCached(currentVersion, homeDir)
+		if err != nil || !isNewer {
+			return updateCheckMsg{latestVersion: latest, isAvailable: false}
+		}
+		return updateCheckMsg{latestVersion: latest, isAvailable: true}
+	}
+}
+
 type listKeyMap struct {
 	connect    key.Binding
 	add        key.Binding
@@ -173,6 +188,7 @@ type listKeyMap struct {
 	ping       key.Binding
 	viewRaw    key.Binding
 	toggleTab  key.Binding
+	upgrade    key.Binding
 }
 
 func newListKeyMap() *listKeyMap {
@@ -221,27 +237,32 @@ func newListKeyMap() *listKeyMap {
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "toggle view"),
 		),
+		upgrade: key.NewBinding(
+			key.WithKeys("U"),
+			key.WithHelp("U", "upgrade"),
+		),
 	}
 }
 
 type model struct {
-	list          list.Model
-	keys          *listKeyMap
-	choice        string
-	action        string
-	width         int
-	height        int
-	quitting      bool
-	showDetails   bool
-	showRaw       bool
-	confirmDelete bool
-	statusMessage string
-	pingStatus    map[string]string
-	homeDir       string
+	list            list.Model
+	keys            *listKeyMap
+	choice          string
+	action          string
+	width           int
+	height          int
+	quitting        bool
+	showDetails     bool
+	showRaw         bool
+	confirmDelete   bool
+	statusMessage   string
+	pingStatus      map[string]string
+	updateAvailable string
+	homeDir         string
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return checkUpdateCmd(Version, m.homeDir)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -278,6 +299,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.pingStatus[msg.alias] = fmt.Sprintf("🟢 Reachable (%dms)", msg.latency.Milliseconds())
+		}
+		return m, nil
+
+	case updateCheckMsg:
+		if msg.isAvailable {
+			m.updateAvailable = msg.latestVersion
 		}
 		return m, nil
 
@@ -389,6 +416,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showRaw = !m.showRaw
 			return m, nil
 
+		case key.Matches(msg, m.keys.upgrade):
+			m.action = "upgrade"
+			return m, tea.Quit
+
 		case msg.String() == "q" || msg.String() == "ctrl+c" || (msg.String() == "esc" && m.list.FilterState() == list.Unfiltered):
 			m.quitting = true
 			m.action = "quit"
@@ -411,8 +442,11 @@ func (m model) View() string {
 		cardContent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("📡 No SSH Hosts Found\n\n") +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE")).Render("No configured hosts found in ~/.ssh/config.\n\n") +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add your first host\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit")
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n")
+		if m.updateAvailable != "" {
+			cardContent += lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render(fmt.Sprintf("[U] Upgrade sshx to %s\n", m.updateAvailable))
+		}
+		cardContent += lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit")
 
 		if m.statusMessage != "" {
 			cardContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")).Bold(true).Render(m.statusMessage+"\n\n") + cardContent
@@ -452,7 +486,7 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), "\n"+delPrompt)
 	}
 
-	inspectorContent := renderInspector(selected, m.showRaw, m.pingStatus[selected.Alias], m.statusMessage)
+	inspectorContent := renderInspector(selected, m.showRaw, m.pingStatus[selected.Alias], m.statusMessage, m.updateAvailable)
 
 	// Responsive layout: Side-by-side when terminal width >= 100 columns
 	if m.width >= 100 {
@@ -497,12 +531,23 @@ func (m model) View() string {
 	return m.list.View()
 }
 
-func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg string) string {
+func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvailable string) string {
 	var sb strings.Builder
 
 	// Title
 	sb.WriteString(inspectorTitle.Render(fmt.Sprintf("📡 Host: %s", h.Alias)))
 	sb.WriteString("\n")
+
+	// Update Notification Banner if a new version is available
+	if updateAvailable != "" {
+		updateBadge := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#00D7D7")).
+			Padding(0, 1).
+			Render(fmt.Sprintf("↑ UPDATE %s AVAILABLE", updateAvailable))
+		sb.WriteString(updateBadge + " " + dimStyle.Render("Press [U] to upgrade sshx") + "\n\n")
+	}
 
 	// If Raw mode is toggled, show the syntax-highlighted raw OpenSSH configuration block!
 	if showRaw {
@@ -611,6 +656,9 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg string) str
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("[v] Raw"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8A8A8A")).Render("[E] Config"),
 	)
+	if updateAvailable != "" {
+		fmt.Fprintf(&sb, "  %s", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[U] Upgrade"))
+	}
 
 	return sb.String()
 }
@@ -646,7 +694,7 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 		return []key.Binding{keys.connect, keys.add, keys.edit, keys.clone, keys.yank, keys.ping}
 	}
 	l.AdditionalFullHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.connect, keys.add, keys.edit, keys.clone, keys.delete, keys.copyID, keys.yank, keys.ping, keys.viewRaw, keys.openEditor, keys.toggleTab}
+		return []key.Binding{keys.connect, keys.add, keys.edit, keys.clone, keys.delete, keys.copyID, keys.yank, keys.ping, keys.viewRaw, keys.openEditor, keys.toggleTab, keys.upgrade}
 	}
 
 	l.KeyMap.Quit.SetKeys("q", "esc")
