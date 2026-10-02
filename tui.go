@@ -182,6 +182,9 @@ type updateCheckMsg struct {
 }
 
 func checkUpdateCmd(currentVersion, homeDir string) tea.Cmd {
+	if updateCheckDisabled(currentVersion) {
+		return nil
+	}
 	return func() tea.Msg {
 		latest, isNewer, err := CheckLatestReleaseCached(currentVersion, homeDir)
 		if err != nil || !isNewer {

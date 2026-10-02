@@ -36,6 +36,7 @@ func main() {
 		args = append([]string{"add"}, args...)
 	}
 
+	RemoveStaleBinary()
 	os.Exit(run(args, homeDir))
 }
 
