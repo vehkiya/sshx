@@ -24,12 +24,25 @@ import (
 )
 
 const (
-	repoOwner       = "vehkiya"
-	repoName        = "sshx"
-	releasesAPIURL  = "https://api.github.com/repos/vehkiya/sshx/releases/latest"
-	updateCacheFile = ".sshx_update_cache"
-	cacheTTL        = 6 * time.Hour
+	repoOwner      = "vehkiya"
+	repoName       = "sshx"
+	releasesAPIURL = "https://api.github.com/repos/vehkiya/sshx/releases/latest"
+	cacheTTL       = 6 * time.Hour
+
+	// legacyUpdateCacheFile is where older versions kept the cache, inside ~/.ssh.
+	legacyUpdateCacheFile = ".sshx_update_cache"
+
+	// noUpdateCheckEnv disables the TUI's background update check when set to any value.
+	noUpdateCheckEnv = "SSHX_NO_UPDATE_CHECK"
+
+	maxReleaseInfoSize = 1 << 20
+	maxChecksumsSize   = 1 << 20
+	maxArchiveSize     = 64 << 20
+	maxBinarySize      = 128 << 20
 )
+
+// renameFile is os.Rename, replaceable in tests to simulate failures.
+var renameFile = os.Rename
 
 // ReleaseAsset represents a single downloadable file in a GitHub release.
 type ReleaseAsset struct {
@@ -73,7 +86,7 @@ func CheckLatestRelease(currentVersion string) (*ReleaseInfo, bool, error) {
 		return nil, false, fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimited(resp.Body, maxReleaseInfoSize)
 	if err != nil {
 		return nil, false, err
 	}
@@ -87,9 +100,34 @@ func CheckLatestRelease(currentVersion string) (*ReleaseInfo, bool, error) {
 	return &rel, isNewer, nil
 }
 
+// updateCachePath is the update-check cache in the user's cache directory.
+func updateCachePath(homeDir string) string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "sshx", "update-check.json")
+	}
+	return filepath.Join(homeDir, ".cache", "sshx", "update-check.json")
+}
+
+// updateCheckDisabled reports whether the background update check should be skipped:
+// when the user opted out, or for development builds that have no release to compare with.
+func updateCheckDisabled(currentVersion string) bool {
+	return os.Getenv(noUpdateCheckEnv) != "" || currentVersion == "dev"
+}
+
+func writeUpdateCache(homeDir, latestVersion string) {
+	c := updateCache{
+		CheckedAt:     time.Now().Unix(),
+		LatestVersion: latestVersion,
+	}
+	if cData, err := json.Marshal(c); err == nil {
+		_ = AtomicWrite(updateCachePath(homeDir), cData, 0600)
+	}
+}
+
 // CheckLatestReleaseCached checks for updates, using a local cache if checked within cacheTTL.
 func CheckLatestReleaseCached(currentVersion, homeDir string) (latestVersion string, isNewer bool, err error) {
-	cachePath := filepath.Join(homeDir, ".ssh", updateCacheFile)
+	cachePath := updateCachePath(homeDir)
+	_ = os.Remove(filepath.Join(homeDir, ".ssh", legacyUpdateCacheFile))
 
 	// Check cache
 	if data, err := os.ReadFile(filepath.Clean(cachePath)); err == nil { //nolint:gosec // user update cache file
@@ -106,19 +144,13 @@ func CheckLatestReleaseCached(currentVersion, homeDir string) (latestVersion str
 		return "", false, err
 	}
 
-	// Save to cache
-	c := updateCache{
-		CheckedAt:     time.Now().Unix(),
-		LatestVersion: rel.TagName,
-	}
-	if cData, err := json.Marshal(c); err == nil {
-		_ = AtomicWrite(cachePath, cData, 0600)
-	}
-
+	writeUpdateCache(homeDir, rel.TagName)
 	return rel.TagName, newer, nil
 }
 
-// isNewerVersion compares semver strings (e.g. v0.3.0 and v0.4.0).
+// isNewerVersion compares semver strings (e.g. v0.3.0 and v0.4.0). A release
+// is newer than a pre-release of the same version, such as v0.3.0-rc1 or a Go
+// pseudo-version like v0.3.0-0.20261002093000-abcdef123456.
 func isNewerVersion(current, latest string) bool {
 	curr := strings.TrimPrefix(strings.TrimSpace(current), "v")
 	lat := strings.TrimPrefix(strings.TrimSpace(latest), "v")
@@ -141,7 +173,14 @@ func isNewerVersion(current, latest string) bool {
 			return false
 		}
 	}
-	return false
+	return isPrerelease(curr) && !isPrerelease(lat)
+}
+
+func isPrerelease(v string) bool {
+	if idx := strings.Index(v, "+"); idx != -1 {
+		v = v[:idx]
+	}
+	return strings.Contains(v, "-")
 }
 
 func parseSemVerParts(v string) [3]int {
@@ -200,21 +239,25 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 		return false, fmt.Errorf("no release asset found matching platform %s/%s for %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
 	}
 
+	if checksumURL == "" {
+		return false, fmt.Errorf("release %s has no checksums.txt; refusing to install an unverified binary", rel.TagName)
+	}
+
 	_, _ = fmt.Fprintf(stdout, "Downloading %s...\n", assetName)
-	archiveData, err := downloadURL(assetURL)
+	archiveData, err := downloadURL(assetURL, maxArchiveSize)
 	if err != nil {
 		return false, fmt.Errorf("failed downloading release archive: %w", err)
 	}
 
-	if checksumURL != "" {
-		_, _ = fmt.Fprintf(stdout, "Verifying sha256 checksum...\n")
-		if sumData, err := downloadURL(checksumURL); err == nil {
-			if err := verifyChecksum(archiveData, assetName, string(sumData)); err != nil {
-				return false, fmt.Errorf("checksum verification failed: %w", err)
-			}
-			_, _ = fmt.Fprintf(stdout, "✔ Checksum verified\n")
-		}
+	_, _ = fmt.Fprintf(stdout, "Verifying sha256 checksum...\n")
+	sumData, err := downloadURL(checksumURL, maxChecksumsSize)
+	if err != nil {
+		return false, fmt.Errorf("failed downloading checksums: %w", err)
 	}
+	if err := verifyChecksum(archiveData, assetName, string(sumData)); err != nil {
+		return false, fmt.Errorf("checksum verification failed: %w", err)
+	}
+	_, _ = fmt.Fprintf(stdout, "✔ Checksum verified\n")
 
 	_, _ = fmt.Fprintf(stdout, "Extracting binary...\n")
 	var binaryBytes []byte
@@ -234,31 +277,31 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 
 	// Update local cache so next startup has fresh information
 	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
-		cachePath := filepath.Join(homeDir, ".ssh", updateCacheFile)
-		c := updateCache{
-			CheckedAt:     time.Now().Unix(),
-			LatestVersion: rel.TagName,
-		}
-		if cData, err := json.Marshal(c); err == nil {
-			_ = AtomicWrite(cachePath, cData, 0600)
-		}
+		writeUpdateCache(homeDir, rel.TagName)
 	}
 
-	badge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#5FD787")).
-		Padding(0, 1).
-		Render(" UPDATED ")
+	updatedBadge := badge(" UPDATED ", colorBlack, colorGreen)
 	infoStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#00D7D7")).
+		Foreground(colorCyan).
 		Bold(true)
-	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", badge, rel.TagName, path)
+	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", updatedBadge, rel.TagName, path)
 	_, _ = fmt.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
 	return true, nil
 }
 
-func downloadURL(url string) ([]byte, error) {
+// readLimited reads all of r, failing if it holds more than limit bytes.
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+func downloadURL(url string, limit int64) ([]byte, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -276,15 +319,18 @@ func downloadURL(url string) ([]byte, error) {
 		return nil, fmt.Errorf("server returned HTTP %d for %s", resp.StatusCode, url)
 	}
 
-	return io.ReadAll(resp.Body)
+	return readLimited(resp.Body, limit)
 }
 
+// verifyChecksum checks data against the sha256sum-format entry for assetName.
+// A missing entry is an error: the updater never installs an unverified binary.
 func verifyChecksum(data []byte, assetName, checksumsContent string) error {
 	expectedHash := ""
 	for _, line := range strings.Split(checksumsContent, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 {
-			fileName := filepath.Base(fields[1])
+			// sha256sum marks binary-mode entries with a leading '*'.
+			fileName := filepath.Base(strings.TrimPrefix(fields[1], "*"))
 			if fileName == assetName {
 				expectedHash = strings.ToLower(fields[0])
 				break
@@ -293,7 +339,7 @@ func verifyChecksum(data []byte, assetName, checksumsContent string) error {
 	}
 
 	if expectedHash == "" {
-		return nil
+		return fmt.Errorf("no checksum listed for %s", assetName)
 	}
 
 	actualHash := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -323,7 +369,7 @@ func extractBinaryFromTarGz(archiveData []byte, binaryName string) ([]byte, erro
 		if header.Typeflag == tar.TypeReg {
 			base := filepath.Base(header.Name)
 			if base == binaryName {
-				return io.ReadAll(tr)
+				return readLimited(tr, maxBinarySize)
 			}
 		}
 	}
@@ -343,7 +389,7 @@ func extractBinaryFromZip(archiveData []byte, binaryName string) ([]byte, error)
 			if err != nil {
 				return nil, err
 			}
-			data, err := io.ReadAll(rc)
+			data, err := readLimited(rc, maxBinarySize)
 			_ = rc.Close()
 			if err != nil {
 				return nil, err
@@ -354,36 +400,59 @@ func extractBinaryFromZip(archiveData []byte, binaryName string) ([]byte, error)
 	return nil, fmt.Errorf("binary '%s' not found inside zip archive", binaryName)
 }
 
-// ReplaceCurrentExecutable atomically updates the currently running binary.
-func ReplaceCurrentExecutable(newBinary []byte) (string, error) {
+// currentExecutablePath returns the running binary's path with symlinks resolved.
+func currentExecutablePath() (string, error) {
 	execPath, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("failed to locate running executable: %w", err)
 	}
-
-	realPath, err := filepath.EvalSymlinks(execPath)
-	if err != nil {
-		realPath = execPath
+	if realPath, err := filepath.EvalSymlinks(execPath); err == nil {
+		return realPath, nil
 	}
+	return execPath, nil
+}
 
+// RemoveStaleBinary deletes the previous executable that a Windows self-update
+// leaves behind, since a running .exe cannot be deleted during the update.
+func RemoveStaleBinary() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if realPath, err := currentExecutablePath(); err == nil {
+		_ = os.Remove(realPath + ".old")
+	}
+}
+
+// ReplaceCurrentExecutable atomically updates the currently running binary.
+func ReplaceCurrentExecutable(newBinary []byte) (string, error) {
+	realPath, err := currentExecutablePath()
+	if err != nil {
+		return "", err
+	}
 	if strings.Contains(realPath, "go-build") {
 		return realPath, errors.New("cannot update a temporary binary running under 'go run'")
 	}
+	return realPath, replaceExecutable(realPath, newBinary, runtime.GOOS)
+}
 
+// replaceExecutable swaps the file at realPath for newBinary. Windows cannot
+// overwrite a running executable, so there the old binary is first moved aside
+// to realPath+".old" and moved back if installing the new one fails.
+func replaceExecutable(realPath string, newBinary []byte, goos string) error {
 	dir := filepath.Dir(realPath)
 	randBytes := make([]byte, 4)
 	if _, err := rand.Read(randBytes); err != nil {
-		return realPath, err
+		return err
 	}
 	tmpName := filepath.Join(dir, fmt.Sprintf(".tmp.sshx.%s", hex.EncodeToString(randBytes)))
 
 	// Check if directory is writable
-	tmpFile, err := os.OpenFile(filepath.Clean(tmpName), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755) //nolint:gosec // updater temp file
+	tmpFile, err := os.OpenFile(filepath.Clean(tmpName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0755) //nolint:gosec // updater temp file
 	if err != nil {
 		if os.IsPermission(err) {
-			return realPath, fmt.Errorf("permission denied writing to %s (run with sudo: sudo sshx update)", dir)
+			return fmt.Errorf("permission denied writing to %s (run with sudo: sudo sshx update)", dir)
 		}
-		return realPath, fmt.Errorf("failed to create temporary binary: %w", err)
+		return fmt.Errorf("failed to create temporary binary: %w", err)
 	}
 
 	success := false
@@ -395,31 +464,37 @@ func ReplaceCurrentExecutable(newBinary []byte) (string, error) {
 	}()
 
 	if _, err := tmpFile.Write(newBinary); err != nil {
-		return realPath, fmt.Errorf("failed to write new binary: %w", err)
+		return fmt.Errorf("failed to write new binary: %w", err)
 	}
 	if err := tmpFile.Sync(); err != nil {
-		return realPath, fmt.Errorf("failed to sync new binary: %w", err)
+		return fmt.Errorf("failed to sync new binary: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return realPath, fmt.Errorf("failed to close temporary file: %w", err)
+		return fmt.Errorf("failed to close temporary file: %w", err)
 	}
 
 	if err := os.Chmod(tmpName, 0755); err != nil { //nolint:gosec // executable binary requires 0755 permissions
-		return realPath, fmt.Errorf("failed to set permissions on new binary: %w", err)
+		return fmt.Errorf("failed to set permissions on new binary: %w", err)
 	}
 
-	if runtime.GOOS == "windows" {
-		oldPath := realPath + ".old"
+	oldPath := ""
+	if goos == "windows" {
+		oldPath = realPath + ".old"
 		_ = os.Remove(oldPath)
-		if err := os.Rename(realPath, oldPath); err != nil {
-			return realPath, fmt.Errorf("failed to rename existing binary on Windows: %w", err)
+		if err := renameFile(realPath, oldPath); err != nil {
+			return fmt.Errorf("failed to rename existing binary on Windows: %w", err)
 		}
 	}
 
-	if err := os.Rename(tmpName, realPath); err != nil {
-		return realPath, fmt.Errorf("failed to replace executable: %w", err)
+	if err := renameFile(tmpName, realPath); err != nil {
+		if oldPath != "" {
+			if restoreErr := renameFile(oldPath, realPath); restoreErr != nil {
+				return fmt.Errorf("failed to replace executable: %w (restoring the previous binary also failed: %v; it is at %s)", err, restoreErr, oldPath)
+			}
+		}
+		return fmt.Errorf("failed to replace executable: %w", err)
 	}
 
 	success = true
-	return realPath, nil
+	return nil
 }

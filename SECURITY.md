@@ -30,6 +30,7 @@ I aim to acknowledge your report within 48 hours and provide an estimated timeli
 
 When using `sshx`:
 
-- **Permissions**: `sshx` strictly maintains `0600` permissions on `~/.ssh/config` and uses atomic temporary writes with random suffixes to prevent race conditions and file tampering.
+- **Permissions**: `sshx` strictly maintains `0600` permissions on `~/.ssh/config` and uses atomic temporary writes with random suffixes to prevent race conditions and file tampering. The previous version of every file it modifies is kept as a hidden `.<name>.sshx.bak` backup alongside it.
+- **Updates**: `sshx update` refuses to install a binary unless its SHA-256 checksum matches the release's `checksums.txt`. Release archives also carry GitHub build provenance attestations; verify a download with `gh attestation verify <archive> --repo vehkiya/sshx`.
 - **Passphrase Protection**: Always protect private keys with strong passphrases and use an SSH agent (or hardware security key) to handle decryption.
 - **Agent Hygiene**: Utilize `AddKeysToAgent yes` with appropriate key lifetimes or OS keychain integration to minimize key exposure in memory.

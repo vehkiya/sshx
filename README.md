@@ -24,12 +24,15 @@ It provides an intuitive dual-pane terminal interface to search, inspect, connec
   * One-click public key deployment to remote hosts via `ssh-copy-id`.
   * Real-time syntax-colored preview card of the generated SSH configuration block.
 * **Strict OpenSSH File Integrity**:
-  * Non-destructive parsing that preserves inline comments, directives, and wildcard blocks (`Host *`).
+  * Edits happen in place: only the directives you change are rewritten. Other aliases on the `Host` line, wildcard patterns, comments, and directives sshx doesn't manage (`ForwardAgent`, `LocalForward`, ...) are left untouched.
+  * Deleting a host removes its aliases and notes without disturbing neighbouring hosts' comments; wildcard patterns that shared the `Host` line are kept.
   * Atomic writes via randomized temporary files to prevent configuration corruption.
+  * The previous version of each file is kept as a hidden backup alongside it (e.g. `~/.ssh/.config.sshx.bak`).
+  * Symlinked configs (e.g. managed by a dotfiles repo) are written through, not replaced.
   * Automatic `0600` permission enforcement on `~/.ssh/config`.
-  * Support for included configuration fragments (`~/.ssh/config.d/*`).
+  * Understands both `Key Value` and `Key=Value` syntax, quoted values, and nested `Include` directives, plus fragments in `~/.ssh/config.d/*`.
 * **Instant CLI Shortcuts**:
-  * Connect directly by alias: `sshx <alias>`.
+  * Connect directly by alias: `sshx <alias>`, or run a remote command: `sshx <alias> uptime`. ssh's exit code is passed through.
   * Non-interactive target parsing: `sshx add user@192.168.1.100:2222 prod-server`.
   * Zero external runtime dependencies — single static binary.
 
@@ -81,6 +84,14 @@ sudo mv sshx /usr/local/bin/
 
 Download `sshx_windows_amd64.zip` from the [Releases page](https://github.com/vehkiya/sshx/releases/latest), extract `sshx.exe`, and place it in your `%PATH%`.
 
+#### Verifying a Download
+
+Release archives carry GitHub build provenance attestations. With the [GitHub CLI](https://cli.github.com):
+
+```bash
+gh attestation verify sshx_linux_amd64.tar.gz --repo vehkiya/sshx
+```
+
 ### Build from Source
 
 ```bash
@@ -102,7 +113,9 @@ sshx update
 sshx update --check
 ```
 
-In the interactive TUI, `sshx` checks for new releases in the background. If an update is available, an **`UPDATE`** badge appears in the top-right inspector and pressing **`U`** upgrades the binary directly in-place.
+In the interactive TUI, `sshx` checks for new releases in the background (at most every 6 hours, cached in your user cache directory). If an update is available, an **`UPDATE`** badge appears in the top-right inspector and pressing **`U`** upgrades the binary directly in-place. Set `SSHX_NO_UPDATE_CHECK=1` to disable the background check.
+
+The updater only installs a binary whose SHA-256 checksum matches the release's `checksums.txt`; if the checksum is missing or doesn't match, the update is refused.
 
 ---
 
@@ -140,6 +153,12 @@ sshx
 # Connect directly to a host alias
 sshx prod-server
 
+# Run a remote command (exit code is passed through)
+sshx prod-server uptime
+
+# Pass any target straight to ssh
+sshx connect admin@10.0.0.5
+
 # Interactively add a new SSH host
 sshx add
 
@@ -164,10 +183,10 @@ sshx update --check
 # List all configured SSH hosts in terminal
 sshx ls
 
-# Remove a host from ~/.ssh/config
+# Remove a host (and all of its aliases) from the config file that defines it
 sshx rm prod-server
 
-# Open ~/.ssh/config in your configured $EDITOR (vim/nvim)
+# Open ~/.ssh/config in $VISUAL / $EDITOR (falls back to nvim, vim, vi, nano)
 sshx edit
 
 # View version info
@@ -189,6 +208,9 @@ golangci-lint run
 
 # Format code
 gofmt -s -w .
+
+# Check module hygiene
+go mod tidy -diff
 ```
 
 ---

@@ -51,6 +51,8 @@ Before committing or submitting changes, all of the following steps **MUST** pas
 * **Strict Permissions**: Any write to `~/.ssh/config` must enforce `0600` permissions.
 * **Atomic Writes**: Writes must use temporary files with randomized suffixes in the same directory, followed by an atomic rename (`os.Rename`), preventing configuration corruption during power outages or system interruptions.
 * **Non-Destructive Parsing**: Modifying or removing host blocks must preserve comments, wildcards (`Host *`), and directives across other host definitions.
+* **In-Place Edits**: Editing a host must only rewrite the directives whose values changed (`UpdateHost`); other aliases, patterns, unmanaged directives, and the section's position stay as they were.
+* **Single Write Path**: Write SSH config files through `WriteConfigFile`, which keeps a hidden backup, writes atomically with `0600`, and preserves symlinks.
 
 ### 2.3 Unified Charm Design System
 * Keep UI styling consistent with the `sshx` palette:

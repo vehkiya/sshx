@@ -3,17 +3,14 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -21,64 +18,64 @@ var (
 	// Brand and header styles
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#7D56F4")). // Charm Purple
+			Foreground(colorWhite).
+			Background(colorPurple). // Charm Purple
 			Padding(0, 1)
 
 	// Panes
 	rightPaneStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(colorPurple).
 			Padding(1, 2)
 
 	detailBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(colorPurple).
 			Padding(0, 1).
 			MarginTop(1)
 
 	// Inspector elements
 	inspectorTitle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FF5F87")). // Coral Pink
+			Foreground(colorCoral). // Coral Pink
 			MarginBottom(1)
 
 	cardLabel = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#00D7D7")). // Vibrant Cyan
+			Foreground(colorCyan). // Vibrant Cyan
 			Width(13)
 
 	cardValue = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EEEEEE"))
+			Foreground(colorLightGray)
 
 	cmdPreviewStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#5FD787")). // Soft Green
-			Background(lipgloss.Color("#262626")).
+			Foreground(colorGreen). // Soft Green
+			Background(colorDarkGray).
 			Padding(0, 1).
 			MarginTop(1).
 			MarginBottom(1)
 
 	// Badges
 	keyBadge = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#5FD787")).
+			Foreground(colorBlack).
+			Background(colorGreen).
 			Bold(true).
 			Padding(0, 1)
 
 	passwordBadge = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#FFAF00")).
+			Foreground(colorBlack).
+			Background(colorAmber).
 			Bold(true).
 			Padding(0, 1)
 
 	defaultBadge = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#5F87AF")).
+			Foreground(colorWhite).
+			Background(colorSlate).
 			Bold(true).
 			Padding(0, 1)
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#767676"))
+			Foreground(colorDim)
 )
 
 type customDelegate struct {
@@ -88,17 +85,18 @@ type customDelegate struct {
 func newCustomDelegate() customDelegate {
 	d := list.NewDefaultDelegate()
 	d.Styles.SelectedTitle = d.Styles.SelectedTitle.
-		Foreground(lipgloss.Color("#FF5F87")).
-		BorderLeftForeground(lipgloss.Color("#7D56F4")).
+		Foreground(colorCoral).
+		BorderLeftForeground(colorPurple).
 		Bold(true)
 	d.Styles.SelectedDesc = d.Styles.SelectedDesc.
-		Foreground(lipgloss.Color("#FFFFFF")).
-		BorderLeftForeground(lipgloss.Color("#7D56F4"))
+		Foreground(colorWhite).
+		BorderLeftForeground(colorPurple)
 	return customDelegate{DefaultDelegate: d}
 }
 
 // copyToClipboard copies text to the system clipboard via OSC 52 and CLI tools.
-func copyToClipboard(text string) {
+// It is a variable so tests can avoid touching the real clipboard.
+var copyToClipboard = func(text string) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(text))
 	_, _ = fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", encoded)
 
@@ -127,30 +125,47 @@ func copyToClipboard(text string) {
 
 type pingResultMsg struct {
 	alias   string
+	via     string // jump host probed in place of a host behind ProxyJump
 	latency time.Duration
 	err     error
 }
 
-func checkReachabilityCmd(alias, hostName string, port int) tea.Cmd {
+func checkReachabilityCmd(alias, addr, via string) tea.Cmd {
 	return func() tea.Msg {
-		targetHost := hostName
-		if targetHost == "" {
-			targetHost = alias
-		}
-		targetHost = strings.Trim(targetHost, "[]")
-		targetPort := port
-		if targetPort <= 0 {
-			targetPort = 22
-		}
-		target := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", target, 1500*time.Millisecond)
-		if err != nil {
-			return pingResultMsg{alias: alias, err: err}
-		}
-		_ = conn.Close()
-		return pingResultMsg{alias: alias, latency: time.Since(start)}
+		latency, err := probeTCP(addr, 1500*time.Millisecond)
+		return pingResultMsg{alias: alias, via: via, latency: latency, err: err}
 	}
+}
+
+// pingStatusText describes a probe result for the inspector.
+func pingStatusText(msg pingResultMsg) string {
+	subject := "Reachable"
+	if msg.via != "" {
+		subject = fmt.Sprintf("Jump host %s reachable", msg.via)
+	}
+	switch {
+	case msg.err == nil:
+		return fmt.Sprintf("🟢 %s (%dms)", subject, msg.latency.Milliseconds())
+	case os.IsTimeout(msg.err) || strings.Contains(strings.ToLower(msg.err.Error()), "timeout"):
+		if msg.via != "" {
+			return fmt.Sprintf("🔴 Jump host %s timeout (>1.5s)", msg.via)
+		}
+		return "🔴 Timeout (>1.5s)"
+	case msg.via != "":
+		return fmt.Sprintf("🔴 Jump host %s unreachable", msg.via)
+	default:
+		return "🔴 Unreachable"
+	}
+}
+
+func hostsFromItems(items []list.Item) []HostItem {
+	hosts := make([]HostItem, 0, len(items))
+	for _, it := range items {
+		if h, ok := it.(HostItem); ok {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
 }
 
 type clearStatusMsg struct{}
@@ -167,6 +182,9 @@ type updateCheckMsg struct {
 }
 
 func checkUpdateCmd(currentVersion, homeDir string) tea.Cmd {
+	if updateCheckDisabled(currentVersion) {
+		return nil
+	}
 	return func() tea.Msg {
 		latest, isNewer, err := CheckLatestReleaseCached(currentVersion, homeDir)
 		if err != nil || !isNewer {
@@ -291,15 +309,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pingStatus == nil {
 			m.pingStatus = make(map[string]string)
 		}
-		if msg.err != nil {
-			if os.IsTimeout(msg.err) || strings.Contains(strings.ToLower(msg.err.Error()), "timeout") {
-				m.pingStatus[msg.alias] = "🔴 Timeout (>1.5s)"
-			} else {
-				m.pingStatus[msg.alias] = "🔴 Unreachable"
-			}
-		} else {
-			m.pingStatus[msg.alias] = fmt.Sprintf("🟢 Reachable (%dms)", msg.latency.Milliseconds())
-		}
+		m.pingStatus[msg.alias] = pingStatusText(msg)
 		return m, nil
 
 	case updateCheckMsg:
@@ -316,19 +326,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirmDelete {
 			switch msg.String() {
 			case "y", "Y":
-				if selected, ok := m.list.SelectedItem().(HostItem); ok {
-					configPath, err := ResolveHostConfigFile(selected.Alias, m.homeDir)
-					if err != nil {
-						m.statusMessage = fmt.Sprintf("✘ Failed to locate '%s': %v", selected.Alias, err)
-					} else if err := DeleteHostFromConfigFile(selected.Alias, configPath); err != nil {
-						m.statusMessage = fmt.Sprintf("✘ Error deleting '%s': %v", selected.Alias, err)
-					} else {
-						m.list.RemoveItem(m.list.Index())
-						m.statusMessage = fmt.Sprintf("✔ Deleted '%s'", selected.Alias)
-					}
-				}
 				m.confirmDelete = false
-				return m, clearStatusCmd()
+				selected, ok := m.list.SelectedItem().(HostItem)
+				if !ok {
+					return m, nil
+				}
+				configPath, err := ResolveHostConfigFile(selected.Alias, m.homeDir, selected.ConfigFile)
+				if err == nil {
+					err = DeleteHostFromConfigFile(strings.Join(selected.AllAliases, " "), configPath)
+				}
+				if err != nil {
+					m.statusMessage = fmt.Sprintf("✘ Error deleting '%s': %v", selected.Alias, err)
+					return m, clearStatusCmd()
+				}
+				m.statusMessage = fmt.Sprintf("✔ Deleted '%s'", selected.Alias)
+				// RemoveItem is unreliable while a filter is applied, so rebuild the
+				// items and let the list re-run the active filter.
+				idx := m.list.GlobalIndex()
+				items := append([]list.Item(nil), m.list.Items()...)
+				items = append(items[:idx], items[idx+1:]...)
+				return m, tea.Batch(m.list.SetItems(items), clearStatusCmd())
 			case "n", "N", "esc", "q":
 				m.confirmDelete = false
 				m.statusMessage = "Deletion cancelled"
@@ -409,7 +426,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pingStatus = make(map[string]string)
 				}
 				m.pingStatus[selected.Alias] = "⏳ Probing..."
-				return m, checkReachabilityCmd(selected.Alias, selected.HostName, selected.Port)
+				addr, via := probeAddress(selected, hostsFromItems(m.list.Items()))
+				return m, checkReachabilityCmd(selected.Alias, addr, via)
 			}
 
 		case key.Matches(msg, m.keys.viewRaw):
@@ -439,22 +457,22 @@ func (m model) View() string {
 
 	// 1. Empty state
 	if len(m.list.Items()) == 0 {
-		cardContent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("📡 No SSH Hosts Found\n\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE")).Render("No configured hosts found in ~/.ssh/config.\n\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add your first host\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n")
+		cardContent := lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("📡 No SSH Hosts Found\n\n") +
+			lipgloss.NewStyle().Foreground(colorLightGray).Render("No configured hosts found in ~/.ssh/config.\n\n") +
+			lipgloss.NewStyle().Foreground(colorCyan).Render("[a] Add your first host\n") +
+			lipgloss.NewStyle().Foreground(colorAmber).Render("[E] Open ~/.ssh/config in $EDITOR\n")
 		if m.updateAvailable != "" {
-			cardContent += lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render(fmt.Sprintf("[U] Upgrade sshx to %s\n", m.updateAvailable))
+			cardContent += lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(fmt.Sprintf("[U] Upgrade sshx to %s\n", m.updateAvailable))
 		}
-		cardContent += lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit")
+		cardContent += lipgloss.NewStyle().Foreground(colorDim).Render("[q] Quit")
 
 		if m.statusMessage != "" {
-			cardContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")).Bold(true).Render(m.statusMessage+"\n\n") + cardContent
+			cardContent = statusStyle(m.statusMessage).Render(m.statusMessage+"\n\n") + cardContent
 		}
 
 		emptyCard := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(colorPurple).
 			Padding(2, 4).
 			Align(lipgloss.Center).
 			Render(cardContent)
@@ -472,21 +490,18 @@ func (m model) View() string {
 
 	// Confirmation banner if deleting
 	if m.confirmDelete {
-		displayFile := selected.ConfigFile
-		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(displayFile, home) {
-			displayFile = "~" + displayFile[len(home):]
-		}
+		displayFile := shortenHome(selected.ConfigFile, m.homeDir)
 		delPrompt := lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#FF4672")).
+			Foreground(colorWhite).
+			Background(colorRed).
 			Padding(0, 2).
-			Render(fmt.Sprintf("⚠️  Delete host block for '%s' from %s? [y/N]", selected.Alias, displayFile))
+			Render(fmt.Sprintf("⚠️  Delete host '%s' from %s? [y/N]", selected.Alias, displayFile))
 
 		return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), "\n"+delPrompt)
 	}
 
-	inspectorContent := renderInspector(selected, m.showRaw, m.pingStatus[selected.Alias], m.statusMessage, m.updateAvailable)
+	inspectorContent := renderInspector(selected, m.homeDir, m.showRaw, m.pingStatus[selected.Alias], m.statusMessage, m.updateAvailable)
 
 	// Responsive layout: Side-by-side when terminal width >= 100 columns
 	if m.width >= 100 {
@@ -516,22 +531,28 @@ func (m model) View() string {
 		if maxH < 5 {
 			maxH = 5
 		}
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("⇥ Press [Tab] to return to Host List\n\n")
+		header := lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("⇥ Press [Tab] to return to Host List\n\n")
 		return detailBoxStyle.Width(m.width - 4).MaxHeight(maxH).Render(header + inspectorContent)
 	}
 
 	if m.statusMessage != "" {
-		toast := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#5FD787")).
-			Bold(true).
-			Render("  " + m.statusMessage)
+		toast := statusStyle(m.statusMessage).Render("  " + m.statusMessage)
 		return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), toast)
 	}
 
 	return m.list.View()
 }
 
-func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvailable string) string {
+// statusStyle colours a status toast: red for failures, green otherwise.
+func statusStyle(msg string) lipgloss.Style {
+	color := colorGreen
+	if strings.HasPrefix(msg, "✘") {
+		color = colorRed
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(color)
+}
+
+func renderInspector(h HostItem, homeDir string, showRaw bool, pingStatus, statusMsg, updateAvailable string) string {
 	var sb strings.Builder
 
 	// Title
@@ -542,8 +563,8 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 	if updateAvailable != "" {
 		updateBadge := lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#00D7D7")).
+			Foreground(colorBlack).
+			Background(colorCyan).
 			Padding(0, 1).
 			Render(fmt.Sprintf("↑ UPDATE %s AVAILABLE", updateAvailable))
 		sb.WriteString(updateBadge + " " + dimStyle.Render("Press [U] to upgrade sshx") + "\n\n")
@@ -554,22 +575,11 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 		sb.WriteString(dimStyle.Render("── Raw OpenSSH Configuration ───────────\n"))
 		rawText := strings.Join(h.RawLines, "\n")
 		if strings.TrimSpace(rawText) == "" {
-			entry := HostEntry{
-				Alias:          h.Alias,
-				HostName:       h.HostName,
-				User:           h.User,
-				Port:           h.Port,
-				IdentityFile:   h.IdentityFile,
-				IdentitiesOnly: h.IdentitiesOnly,
-				PubkeyAuth:     h.PubkeyAuth,
-				PasswordAuth:   h.PasswordAuth,
-				ProxyJump:      h.ProxyJump,
-			}
-			rawText = strings.TrimRight(entry.Format(), "\n")
+			rawText = strings.TrimRight(h.Entry().Format(), "\n")
 		}
 		sb.WriteString(highlightConfigBlock(rawText))
 		sb.WriteString("\n\n" + dimStyle.Render("── Quick Actions ────────────────────────\n"))
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[v] Formatted View"))
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[v] Formatted View"))
 		return sb.String()
 	}
 
@@ -577,27 +587,24 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 	cmdStr := fmt.Sprintf("ssh %s", h.Alias)
 	sb.WriteString(cmdPreviewStyle.Render(cmdStr))
 	if statusMsg != "" {
-		sb.WriteString("  " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render(statusMsg))
+		sb.WriteString("  " + statusStyle(statusMsg).Render(statusMsg))
 	}
 	sb.WriteString("\n\n")
 
 	// Notes/Comments if present
 	if h.Notes != "" {
-		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Notes:"), lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FFAF00")).Render(h.Notes))
+		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Notes:"), lipgloss.NewStyle().Italic(true).Foreground(colorAmber).Render(h.Notes))
 	}
 
 	// Target line
-	targetStr := h.HostName
-	if h.User != "" {
-		targetStr = h.User + "@" + targetStr
-	}
-	if h.Port > 0 && h.Port != 22 {
-		targetStr += fmt.Sprintf(":%d", h.Port)
-	}
-	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Target:"), cardValue.Render(targetStr))
+	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Target:"), cardValue.Render(h.Target()))
 
 	// HostName & User
-	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("HostName:"), cardValue.Render(h.HostName))
+	if h.HostName != "" {
+		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("HostName:"), cardValue.Render(h.HostName))
+	} else {
+		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("HostName:"), dimStyle.Render("not set (ssh connects to the alias)"))
+	}
 	if h.User != "" {
 		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("User:"), cardValue.Render(h.User))
 	}
@@ -638,26 +645,22 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 	}
 
 	// Config source file
-	relFile := h.ConfigFile
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(h.ConfigFile, home) {
-		relFile = "~" + h.ConfigFile[len(home):]
-	}
-	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Config File:"), dimStyle.Render(relFile))
+	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Config File:"), dimStyle.Render(shortenHome(h.ConfigFile, homeDir)))
 
 	sb.WriteString("\n" + dimStyle.Render("── Quick Actions ────────────────────────"))
 	fmt.Fprintf(&sb, "\n%s  %s  %s  %s  %s  %s  %s  %s  %s",
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[Enter] Connect"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("[e] Edit"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[D] Clone"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Render("[c] Key"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[y] Yank"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[p] Ping"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("[v] Raw"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8A8A8A")).Render("[E] Config"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[Enter] Connect"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[a] Add"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorPurple).Render("[e] Edit"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[D] Clone"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorAmber).Render("[c] Key"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[y] Yank"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[p] Ping"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("[v] Raw"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorGray).Render("[E] Config"),
 	)
 	if updateAvailable != "" {
-		fmt.Fprintf(&sb, "  %s", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[U] Upgrade"))
+		fmt.Fprintf(&sb, "  %s", lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[U] Upgrade"))
 	}
 
 	return sb.String()
@@ -725,44 +728,4 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 	}
 
 	return fm.choice, fm.action, nil
-}
-
-// DeleteHostPrompt prompts for confirmation and strips a host from its SSH config file.
-func DeleteHostPrompt(alias, homeDir string, targetConfigFile ...string) error {
-	configPath, err := ResolveHostConfigFile(alias, homeDir, targetConfigFile...)
-	if err != nil {
-		return err
-	}
-
-	displayPath := configPath
-	if homeDir != "" && strings.HasPrefix(configPath, homeDir) {
-		displayPath = "~" + configPath[len(homeDir):]
-	}
-
-	var confirm bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(fmt.Sprintf("Delete host block for '%s' from %s?", alias, displayPath)).
-				Description("This action permanently removes the Host configuration entry").
-				Value(&confirm),
-		).Title("Confirm Host Deletion"),
-	).WithTheme(customHuhTheme())
-
-	if err := form.Run(); err != nil || !confirm {
-		return nil
-	}
-
-	if err := DeleteHostFromConfigFile(alias, configPath); err != nil {
-		return err
-	}
-
-	delBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#FF5F87")).
-		Padding(0, 1).
-		Render(" DELETED ")
-	fmt.Printf("\n%s Removed '%s' from %s\n\n", delBadge, alias, displayPath)
-	return nil
 }
