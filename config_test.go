@@ -198,3 +198,35 @@ func TestHostEntryFormatWithProxyJump(t *testing.T) {
 		t.Errorf("expected Host header, got:\n%s", formatted)
 	}
 }
+
+func TestLoadAllHostsWithNotes(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	configContent := `# Production Database Cluster
+# Primary PostgreSQL node
+Host db-prod
+    HostName db.example.internal
+    User postgres
+`
+	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(configContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	hosts, err := LoadAllHosts(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadAllHosts failed: %v", err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("expected 1 host, got %d", len(hosts))
+	}
+	if !strings.Contains(hosts[0].Notes, "Production Database Cluster") {
+		t.Errorf("expected notes to contain 'Production Database Cluster', got %q", hosts[0].Notes)
+	}
+	if !strings.Contains(hosts[0].FilterValue(), "PostgreSQL") {
+		t.Errorf("expected FilterValue to contain 'PostgreSQL', got %q", hosts[0].FilterValue())
+	}
+}

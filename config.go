@@ -26,6 +26,7 @@ type HostItem struct {
 	PasswordAuth   bool
 	ProxyJump      string
 	ConfigFile     string
+	Notes          string
 	RawLines       []string
 }
 
@@ -67,12 +68,13 @@ func (h HostItem) Description() string {
 
 // FilterValue implements list.Item for fuzzy filtering.
 func (h HostItem) FilterValue() string {
-	return fmt.Sprintf("%s %s %s %s %s",
+	return fmt.Sprintf("%s %s %s %s %s %s",
 		strings.Join(h.AllAliases, " "),
 		h.HostName,
 		h.User,
 		strconv.Itoa(h.Port),
 		h.IdentityFile,
+		h.Notes,
 	)
 }
 
@@ -179,11 +181,25 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 			currentHost = nil
 		}
 
+		var pendingComments []string
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			if trimmed == "" {
 				if currentHost != nil {
 					currentHost.RawLines = append(currentHost.RawLines, line)
+				} else {
+					pendingComments = nil
+				}
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				if currentHost != nil {
+					currentHost.RawLines = append(currentHost.RawLines, line)
+				} else {
+					comment := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+					if comment != "" {
+						pendingComments = append(pendingComments, comment)
+					}
 				}
 				continue
 			}
@@ -207,16 +223,19 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 					}
 
 					if len(validAliases) > 0 {
+						notes := strings.Join(pendingComments, " ")
 						currentHost = &HostItem{
 							Alias:      validAliases[0],
 							AllAliases: validAliases,
 							Port:       22,
 							PubkeyAuth: true,
 							ConfigFile: file,
+							Notes:      notes,
 							RawLines:   []string{line},
 						}
 					}
 				}
+				pendingComments = nil
 				continue
 			}
 

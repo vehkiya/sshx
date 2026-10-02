@@ -143,6 +143,14 @@ func main() {
 				}
 			}
 
+		case "clone-host":
+			if choice != "" {
+				clonedAlias, err := CloneHostWizard(choice, homeDir)
+				if err == nil && clonedAlias != "" {
+					lastSelected = clonedAlias
+				}
+			}
+
 		case "delete":
 			if choice != "" {
 				_ = DeleteHostPrompt(choice, homeDir)
@@ -186,8 +194,12 @@ func printUsage() {
 	fmt.Println("  /          Filter / search hosts")
 	fmt.Println("  a          Add new host (launches wizard)")
 	fmt.Println("  e          Edit selected host (launches wizard)")
+	fmt.Println("  D          Duplicate / clone selected host")
 	fmt.Println("  d, x       Delete selected host")
 	fmt.Println("  c          Copy public key to host (ssh-copy-id)")
+	fmt.Println("  y          Yank SSH connect command to clipboard")
+	fmt.Println("  p          Probe TCP reachability / ping host")
+	fmt.Println("  v          Toggle raw OpenSSH config view")
 	fmt.Println("  E          Open ~/.ssh/config in $EDITOR")
 	fmt.Println("  Tab        Toggle details inspector (on compact displays)")
 	fmt.Println("  q, Esc     Quit")

@@ -74,12 +74,16 @@ Launch the interactive host manager simply by typing `sshx`:
 | :--- | :--- |
 | `↑` / `k` | Move cursor up |
 | `↓` / `j` | Move cursor down |
-| `/` | Filter / fuzzy search hosts |
+| `/` | Filter / fuzzy search hosts and notes |
 | `Enter` | Connect to selected host immediately |
 | `a` | Add a new host (launches interactive wizard) |
 | `e` | Edit selected host (launches interactive wizard) |
+| `D` | Duplicate / clone selected host |
 | `c` | Copy public key to remote host (`ssh-copy-id`) |
-| `d` | Delete selected host block (with confirmation prompt) |
+| `y` | Yank SSH connect command to clipboard (OSC 52) |
+| `p` | Probe TCP reachability / ping host |
+| `v` | Toggle raw OpenSSH config view |
+| `d`, `x` | Delete selected host (with in-TUI confirmation) |
 | `E` | Open `~/.ssh/config` directly in `$EDITOR` |
 | `Tab` | Toggle host details inspector (on compact displays) |
 | `q` / `Esc` | Exit |
