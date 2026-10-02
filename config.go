@@ -87,6 +87,7 @@ type HostEntry struct {
 	PubkeyAuth     bool
 	PasswordAuth   bool
 	PreferredAuths string
+	ProxyJump      string
 }
 
 // Format renders the HostEntry into standard OpenSSH syntax.
@@ -107,6 +108,9 @@ func (h HostEntry) Format() string {
 		if h.IdentitiesOnly {
 			sb.WriteString("    IdentitiesOnly yes\n")
 		}
+	}
+	if h.ProxyJump != "" {
+		fmt.Fprintf(&sb, "    ProxyJump %s\n", h.ProxyJump)
 	}
 	if !h.PubkeyAuth {
 		sb.WriteString("    PubkeyAuthentication no\n")
@@ -351,6 +355,47 @@ func RemoveHost(content, alias string) string {
 	}
 
 	return cleanConsecutiveBlankLines(strings.Join(result, "\n"))
+}
+
+// ResolveHostConfigFile finds the configuration file containing the specified host alias.
+func ResolveHostConfigFile(alias, homeDir string, targetConfigFile ...string) (string, error) {
+	if len(targetConfigFile) > 0 && targetConfigFile[0] != "" {
+		return targetConfigFile[0], nil
+	}
+
+	if hosts, err := LoadAllHosts(homeDir); err == nil {
+		for _, h := range hosts {
+			for _, a := range h.AllAliases {
+				if strings.EqualFold(a, alias) {
+					if h.ConfigFile != "" {
+						return h.ConfigFile, nil
+					}
+					return filepath.Join(homeDir, ".ssh", "config"), nil
+				}
+			}
+		}
+	}
+
+	for _, file := range FindConfigFiles(homeDir) {
+		if data, err := os.ReadFile(filepath.Clean(file)); err == nil {
+			if HasHost(string(data), alias) {
+				return file, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("host '%s' not found in SSH configuration", alias)
+}
+
+// DeleteHostFromConfigFile removes a host block from the specified config file.
+func DeleteHostFromConfigFile(alias, configPath string) error {
+	data, err := os.ReadFile(filepath.Clean(configPath)) //nolint:gosec // user SSH config file path
+	if err != nil {
+		return err
+	}
+
+	cleaned := RemoveHost(string(data), alias)
+	return AtomicWrite(configPath, []byte(cleaned), 0600)
 }
 
 // InsertHost inserts a formatted host block before any wildcard 'Host *' block (and its comments).

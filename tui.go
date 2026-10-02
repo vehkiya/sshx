@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -94,11 +93,13 @@ func newCustomDelegate() customDelegate {
 }
 
 type listKeyMap struct {
-	connect key.Binding
-	add     key.Binding
-	delete  key.Binding
-	copyID  key.Binding
-	edit    key.Binding
+	connect    key.Binding
+	add        key.Binding
+	edit       key.Binding
+	openEditor key.Binding
+	delete     key.Binding
+	copyID     key.Binding
+	toggleTab  key.Binding
 }
 
 func newListKeyMap() *listKeyMap {
@@ -109,7 +110,15 @@ func newListKeyMap() *listKeyMap {
 		),
 		add: key.NewBinding(
 			key.WithKeys("a"),
-			key.WithHelp("a", "add host"),
+			key.WithHelp("a", "add"),
+		),
+		edit: key.NewBinding(
+			key.WithKeys("e"),
+			key.WithHelp("e", "edit"),
+		),
+		openEditor: key.NewBinding(
+			key.WithKeys("E"),
+			key.WithHelp("E", "$EDITOR"),
 		),
 		delete: key.NewBinding(
 			key.WithKeys("d", "x"),
@@ -117,23 +126,24 @@ func newListKeyMap() *listKeyMap {
 		),
 		copyID: key.NewBinding(
 			key.WithKeys("c"),
-			key.WithHelp("c", "ssh-copy-id"),
+			key.WithHelp("c", "copy key"),
 		),
-		edit: key.NewBinding(
-			key.WithKeys("e"),
-			key.WithHelp("e", "edit config"),
+		toggleTab: key.NewBinding(
+			key.WithKeys("tab"),
+			key.WithHelp("tab", "toggle view"),
 		),
 	}
 }
 
 type model struct {
-	list     list.Model
-	keys     *listKeyMap
-	choice   string
-	action   string
-	width    int
-	height   int
-	quitting bool
+	list        list.Model
+	keys        *listKeyMap
+	choice      string
+	action      string
+	width       int
+	height      int
+	quitting    bool
+	showDetails bool
 }
 
 func (m model) Init() tea.Cmd {
@@ -150,7 +160,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			listWidth := m.width * 52 / 100
 			m.list.SetSize(listWidth, m.height-3)
 		} else {
-			m.list.SetSize(m.width, m.height/2)
+			m.list.SetSize(m.width-2, m.height-3)
 		}
 		return m, nil
 
@@ -160,6 +170,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch {
+		case key.Matches(msg, m.keys.toggleTab):
+			if m.width < 100 {
+				m.showDetails = !m.showDetails
+				return m, nil
+			}
+
 		case key.Matches(msg, m.keys.connect):
 			if selected, ok := m.list.SelectedItem().(HostItem); ok {
 				m.choice = selected.Alias
@@ -169,6 +185,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.add):
 			m.action = "add"
+			return m, tea.Quit
+
+		case key.Matches(msg, m.keys.edit):
+			if selected, ok := m.list.SelectedItem().(HostItem); ok {
+				m.choice = selected.Alias
+				m.action = "edit-host"
+				return m, tea.Quit
+			}
+
+		case key.Matches(msg, m.keys.openEditor):
+			m.action = "edit-config"
 			return m, tea.Quit
 
 		case key.Matches(msg, m.keys.delete):
@@ -185,11 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 
-		case key.Matches(msg, m.keys.edit):
-			m.action = "edit"
-			return m, tea.Quit
-
-		case msg.String() == "q" || msg.String() == "ctrl+c":
+		case msg.String() == "q" || msg.String() == "ctrl+c" || (msg.String() == "esc" && m.list.FilterState() == list.Unfiltered):
 			m.quitting = true
 			m.action = "quit"
 			return m, tea.Quit
@@ -224,15 +247,19 @@ func (m model) View() string {
 		leftView := m.list.View()
 		rightView := rightPaneStyle.
 			Width(rightWidth).
-			Height(m.height - 4).
+			MaxHeight(m.height - 3).
 			Render(inspectorContent)
 
 		return lipgloss.JoinHorizontal(lipgloss.Top, leftView, rightView)
 	}
 
-	// Stacked layout for smaller terminals
-	stackedBox := detailBoxStyle.Width(m.width - 4).Render(inspectorContent)
-	return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), stackedBox)
+	// Compact mode (< 100 cols): Tab toggles between list view and inspector view
+	if m.showDetails {
+		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("⇥ Press [Tab] to return to Host List\n\n")
+		return detailBoxStyle.Width(m.width - 4).MaxHeight(m.height - 3).Render(header + inspectorContent)
+	}
+
+	return m.list.View()
 }
 
 func renderInspector(h HostItem) string {
@@ -299,27 +326,37 @@ func renderInspector(h HostItem) string {
 	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Config File:"), dimStyle.Render(relFile))
 
 	sb.WriteString("\n" + dimStyle.Render("── Quick Actions ────────────────────────"))
-	fmt.Fprintf(&sb, "\n%s  %s  %s  %s  %s",
+	fmt.Fprintf(&sb, "\n%s  %s  %s  %s  %s  %s",
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[Enter] Connect"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("[e] Edit"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Render("[c] Copy Key"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("[d] Delete"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8A8A8A")).Render("[e] Edit"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8A8A8A")).Render("[E] Config"),
 	)
 
 	return sb.String()
 }
 
 // RunTUI launches the interactive host browser and returns the selected alias and requested action.
-func RunTUI(homeDir string) (selectedAlias string, action string, err error) {
+func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, action string, err error) {
 	hosts, err := LoadAllHosts(homeDir)
 	if err != nil {
 		return "", "", err
 	}
 
+	targetAlias := ""
+	if len(initialAlias) > 0 {
+		targetAlias = initialAlias[0]
+	}
+
 	items := make([]list.Item, len(hosts))
+	selectedIdx := 0
 	for i, h := range hosts {
 		items[i] = h
+		if targetAlias != "" && strings.EqualFold(h.Alias, targetAlias) {
+			selectedIdx = i
+		}
 	}
 
 	delegate := newCustomDelegate()
@@ -329,10 +366,17 @@ func RunTUI(homeDir string) (selectedAlias string, action string, err error) {
 
 	keys := newListKeyMap()
 	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.connect, keys.add, keys.delete, keys.copyID, keys.edit}
+		return []key.Binding{keys.connect, keys.add, keys.edit, keys.delete, keys.copyID, keys.openEditor}
 	}
 	l.AdditionalFullHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.connect, keys.add, keys.delete, keys.copyID, keys.edit}
+		return []key.Binding{keys.connect, keys.add, keys.edit, keys.delete, keys.copyID, keys.openEditor, keys.toggleTab}
+	}
+
+	l.KeyMap.Quit.SetKeys("q", "esc")
+	l.KeyMap.Quit.SetHelp("q/esc", "quit")
+
+	if selectedIdx > 0 && selectedIdx < len(items) {
+		l.Select(selectedIdx)
 	}
 
 	m := model{
@@ -354,13 +398,23 @@ func RunTUI(homeDir string) (selectedAlias string, action string, err error) {
 	return fm.choice, fm.action, nil
 }
 
-// DeleteHostPrompt prompts for confirmation and strips a host from ~/.ssh/config.
-func DeleteHostPrompt(alias, homeDir string) error {
+// DeleteHostPrompt prompts for confirmation and strips a host from its SSH config file.
+func DeleteHostPrompt(alias, homeDir string, targetConfigFile ...string) error {
+	configPath, err := ResolveHostConfigFile(alias, homeDir, targetConfigFile...)
+	if err != nil {
+		return err
+	}
+
+	displayPath := configPath
+	if homeDir != "" && strings.HasPrefix(configPath, homeDir) {
+		displayPath = "~" + configPath[len(homeDir):]
+	}
+
 	var confirm bool
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
-				Title(fmt.Sprintf("Delete host block for '%s' from ~/.ssh/config?", alias)).
+				Title(fmt.Sprintf("Delete host block for '%s' from %s?", alias, displayPath)).
 				Description("This action permanently removes the Host configuration entry").
 				Value(&confirm),
 		).Title("Confirm Host Deletion"),
@@ -370,14 +424,7 @@ func DeleteHostPrompt(alias, homeDir string) error {
 		return nil
 	}
 
-	configPath := filepath.Join(homeDir, ".ssh", "config")
-	data, err := os.ReadFile(filepath.Clean(configPath)) //nolint:gosec // user SSH config file path
-	if err != nil {
-		return err
-	}
-
-	cleaned := RemoveHost(string(data), alias)
-	if err := AtomicWrite(configPath, []byte(cleaned), 0600); err != nil {
+	if err := DeleteHostFromConfigFile(alias, configPath); err != nil {
 		return err
 	}
 
@@ -387,6 +434,6 @@ func DeleteHostPrompt(alias, homeDir string) error {
 		Background(lipgloss.Color("#FF5F87")).
 		Padding(0, 1).
 		Render(" DELETED ")
-	fmt.Printf("\n%s Removed '%s' from %s\n\n", delBadge, alias, configPath)
+	fmt.Printf("\n%s Removed '%s' from %s\n\n", delBadge, alias, displayPath)
 	return nil
 }

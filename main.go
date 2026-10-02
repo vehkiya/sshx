@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -74,6 +75,14 @@ func main() {
 			return
 
 		case "edit":
+			if len(args) > 1 {
+				alias := args[1]
+				if _, err := EditHostWizard(alias, homeDir); err != nil {
+					fmt.Fprintf(os.Stderr, "Error editing host: %v\n", err)
+					os.Exit(1)
+				}
+				return
+			}
 			openEditor(homeDir)
 			return
 
@@ -102,11 +111,15 @@ func main() {
 	}
 
 	// Default: Launch TUI loop
+	lastSelected := ""
 	for {
-		choice, action, err := RunTUI(homeDir)
+		choice, action, err := RunTUI(homeDir, lastSelected)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)
+		}
+		if choice != "" {
+			lastSelected = choice
 		}
 
 		switch action {
@@ -117,27 +130,44 @@ func main() {
 			return
 
 		case "add":
-			_, _, _ = AddHostWizard("", "", homeDir, false)
-			// Loop back to update list
+			addedAlias, _, _ := AddHostWizard("", "", homeDir, false)
+			if addedAlias != "" {
+				lastSelected = addedAlias
+			}
+
+		case "edit-host":
+			if choice != "" {
+				editedAlias, err := EditHostWizard(choice, homeDir)
+				if err == nil && editedAlias != "" {
+					lastSelected = editedAlias
+				}
+			}
 
 		case "delete":
 			if choice != "" {
 				_ = DeleteHostPrompt(choice, homeDir)
+				pausePrompt()
 			}
-			// Loop back to update list
 
 		case "copy-id":
 			if choice != "" {
 				runCopyIDForHost(choice, homeDir)
+				pausePrompt()
 			}
 
-		case "edit":
+		case "edit-config", "edit":
 			openEditor(homeDir)
 
 		case "quit", "":
 			return
 		}
 	}
+}
+
+func pausePrompt() {
+	fmt.Print("\nPress Enter to return to sshx...")
+	reader := bufio.NewReader(os.Stdin)
+	_, _ = reader.ReadString('\n')
 }
 
 func printUsage() {
@@ -149,15 +179,17 @@ func printUsage() {
 	fmt.Println("  sshx add [target] [alias] Interactively add a new SSH host")
 	fmt.Println("  sshx ls                   List all configured SSH hosts")
 	fmt.Println("  sshx rm <alias>           Remove a host from ~/.ssh/config")
-	fmt.Println("  sshx edit                 Open ~/.ssh/config in $EDITOR")
+	fmt.Println("  sshx edit [alias]         Edit host in wizard, or open ~/.ssh/config in $EDITOR")
 	fmt.Println()
 	fmt.Println("TUI Keybindings:")
 	fmt.Println("  Enter      Connect to selected host")
 	fmt.Println("  /          Filter / search hosts")
 	fmt.Println("  a          Add new host (launches wizard)")
+	fmt.Println("  e          Edit selected host (launches wizard)")
 	fmt.Println("  d, x       Delete selected host")
 	fmt.Println("  c          Copy public key to host (ssh-copy-id)")
-	fmt.Println("  e          Edit ~/.ssh/config in $EDITOR")
+	fmt.Println("  E          Open ~/.ssh/config in $EDITOR")
+	fmt.Println("  Tab        Toggle details inspector (on compact displays)")
 	fmt.Println("  q, Esc     Quit")
 }
 
