@@ -11,3 +11,10 @@ linters:
     - staticcheck
     - unused
     - gosec
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
