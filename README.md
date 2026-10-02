@@ -115,7 +115,7 @@ sshx update --check
 
 In the interactive TUI, `sshx` checks for new releases in the background (at most every 6 hours, cached in your user cache directory). If an update is available, an **`UPDATE`** badge appears in the top-right inspector and pressing **`U`** upgrades the binary directly in-place. Set `SSHX_NO_UPDATE_CHECK=1` to disable the background check.
 
-The updater only installs a binary whose SHA-256 checksum matches the release's `checksums.txt`; if the checksum is missing or doesn't match, the update is refused.
+The updater only installs a binary from a release whose `checksums.txt` is signed with the sshx release key and whose archive matches that checksum; anything unsigned, signed by another key, or tampered with is refused. See [SECURITY.md](SECURITY.md#release-signing) to verify downloads manually.
 
 ---
 

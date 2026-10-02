@@ -5,13 +5,19 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 )
@@ -295,4 +301,166 @@ func TestApplyBuildInfo(t *testing.T) {
 	if Version != "v9.9.9" {
 		t.Errorf("expected -ldflags versions to take precedence, got %s", Version)
 	}
+}
+
+func TestTrustedSigningKeysAreValid(t *testing.T) {
+	if len(trustedSigningKeys) == 0 {
+		t.Fatal("expected at least one trusted signing key")
+	}
+	for _, k := range trustedSigningKeys {
+		pub, err := base64.StdEncoding.DecodeString(k)
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			t.Errorf("trusted key %q is not a base64 Ed25519 public key (err %v, %d bytes)", k, err, len(pub))
+		}
+	}
+}
+
+// newSigningKey returns a fresh key pair with the public half base64-encoded, as in trustedSigningKeys.
+func newSigningKey(t *testing.T) (ed25519.PrivateKey, string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv, base64.StdEncoding.EncodeToString(pub)
+}
+
+// sign produces a checksums.txt.sig body the way the CD workflow does (base64 of the raw signature).
+func sign(priv ed25519.PrivateKey, data []byte) []byte {
+	return []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, data)))
+}
+
+func TestVerifySignature(t *testing.T) {
+	priv, pub := newSigningKey(t)
+	otherPriv, otherPub := newSigningKey(t)
+	data := []byte("abc  sshx_v1.0.0_linux_amd64.tar.gz\n")
+
+	if err := verifySignature(data, sign(priv, data), []string{pub}); err != nil {
+		t.Errorf("expected a valid signature to verify: %v", err)
+	}
+	if err := verifySignature(data, append(sign(priv, data), '\n'), []string{pub}); err != nil {
+		t.Errorf("expected a trailing newline to be ignored: %v", err)
+	}
+	if err := verifySignature(data, sign(otherPriv, data), []string{pub, otherPub}); err != nil {
+		t.Errorf("expected any trusted key to be accepted during rotation: %v", err)
+	}
+	if err := verifySignature(append(data, 'x'), sign(priv, data), []string{pub}); err == nil {
+		t.Errorf("expected tampered data to fail")
+	}
+	if err := verifySignature(data, sign(otherPriv, data), []string{pub}); err == nil {
+		t.Errorf("expected a signature from an untrusted key to fail")
+	}
+	if err := verifySignature(data, []byte("not-base64!"), []string{pub}); err == nil {
+		t.Errorf("expected a malformed signature to fail")
+	}
+}
+
+func TestFetchVerifiedBinary(t *testing.T) {
+	priv, pub := newSigningKey(t)
+	otherPriv, _ := newSigningKey(t)
+	binary := []byte("new-sshx-binary")
+
+	for _, goos := range []string{"linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			name := "sshx_v1.0.0_" + goos + "_amd64"
+			archive := makeTestArchive(t, goos, name, binary)
+			archiveName := name + ".tar.gz"
+			if goos == "windows" {
+				archiveName = name + ".zip"
+			}
+			checksums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName))
+
+			tests := []struct {
+				name      string
+				archive   []byte
+				signature []byte
+				noSig     bool
+				wantErr   string
+			}{
+				{name: "valid", archive: archive, signature: sign(priv, checksums)},
+				{name: "unsigned", archive: archive, noSig: true, wantErr: "not signed"},
+				{name: "untrusted key", archive: archive, signature: sign(otherPriv, checksums), wantErr: "signature verification failed"},
+				{name: "tampered archive", archive: append(append([]byte(nil), archive...), 0), signature: sign(priv, checksums), wantErr: "checksum verification failed"},
+			}
+			for _, tc := range tests {
+				t.Run(tc.name, func(t *testing.T) {
+					files := map[string][]byte{archiveName: tc.archive, checksumsAsset: checksums}
+					if !tc.noSig {
+						files[signatureAsset] = tc.signature
+					}
+					rel := serveRelease(t, "v1.0.0", files)
+
+					got, err := fetchVerifiedBinary(rel, goos, "amd64", []string{pub}, io.Discard)
+					if tc.wantErr != "" {
+						if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+							t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					if !bytes.Equal(got, binary) {
+						t.Errorf("expected extracted binary %q, got %q", binary, got)
+					}
+				})
+			}
+		})
+	}
+}
+
+// serveRelease serves files over HTTP and returns release metadata pointing at them.
+func serveRelease(t *testing.T, tag string, files map[string][]byte) *ReleaseInfo {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := files[strings.TrimPrefix(r.URL.Path, "/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(srv.Close)
+
+	rel := &ReleaseInfo{TagName: tag}
+	for name := range files {
+		rel.Assets = append(rel.Assets, ReleaseAsset{Name: name, BrowserDownloadURL: srv.URL + "/" + name})
+	}
+	return rel
+}
+
+// makeTestArchive packages binary like the CD workflow: a tar.gz (or zip on Windows) with a top-level directory.
+func makeTestArchive(t *testing.T, goos, dir string, binary []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if goos == "windows" {
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create(dir + "/sshx.exe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(binary); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: dir + "/sshx", Mode: 0755, Size: int64(len(binary)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(binary); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

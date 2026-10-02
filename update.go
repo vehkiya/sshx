@@ -5,8 +5,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,11 +37,23 @@ const (
 	// noUpdateCheckEnv disables the TUI's background update check when set to any value.
 	noUpdateCheckEnv = "SSHX_NO_UPDATE_CHECK"
 
+	checksumsAsset = "checksums.txt"
+	signatureAsset = "checksums.txt.sig"
+
 	maxReleaseInfoSize = 1 << 20
 	maxChecksumsSize   = 1 << 20
+	maxSignatureSize   = 4 << 10
 	maxArchiveSize     = 64 << 20
 	maxBinarySize      = 128 << 20
 )
+
+// trustedSigningKeys are the base64 Ed25519 public keys allowed to sign a
+// release's checksums.txt (the CD workflow signs with SSHX_SIGNING_KEY).
+// To rotate, add the new key here and ship a release signed with the old one
+// before switching the secret; installed binaries only trust keys they embed.
+var trustedSigningKeys = []string{
+	"8BjKVqaALl5z4zMcLMFM5Yvm+CZ7qyStyVqZZeefLMQ=",
+}
 
 // renameFile is os.Rename, replaceable in tests to simulate failures.
 var renameFile = os.Rename
@@ -197,7 +211,8 @@ func parseSemVerParts(v string) [3]int {
 	return parts
 }
 
-// PerformUpdate downloads the matching release asset, verifies its checksum, and replaces the current binary.
+// PerformUpdate downloads the matching release asset, verifies the release signature and the
+// archive checksum, and replaces the current binary.
 // Returns (true, nil) if binary was updated, (false, nil) if already up to date, or an error.
 func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, error) {
 	_, _ = fmt.Fprintf(stdout, "Checking for latest release from https://github.com/%s/%s...\n", repoOwner, repoName)
@@ -213,61 +228,9 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 
 	_, _ = fmt.Fprintf(stdout, "Latest release is %s (current: %s)\n", rel.TagName, currentVersion)
 
-	expectedExt := ".tar.gz"
-	binName := "sshx"
-	if runtime.GOOS == "windows" {
-		expectedExt = ".zip"
-		binName = "sshx.exe"
-	}
-
-	expectedPrefix := fmt.Sprintf("sshx_%s_%s_%s", rel.TagName, runtime.GOOS, runtime.GOARCH)
-	var assetURL string
-	var assetName string
-	var checksumURL string
-
-	for _, a := range rel.Assets {
-		if a.Name == "checksums.txt" {
-			checksumURL = a.BrowserDownloadURL
-		}
-		if strings.HasPrefix(a.Name, expectedPrefix) && strings.HasSuffix(a.Name, expectedExt) {
-			assetURL = a.BrowserDownloadURL
-			assetName = a.Name
-		}
-	}
-
-	if assetURL == "" {
-		return false, fmt.Errorf("no release asset found matching platform %s/%s for %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
-	}
-
-	if checksumURL == "" {
-		return false, fmt.Errorf("release %s has no checksums.txt; refusing to install an unverified binary", rel.TagName)
-	}
-
-	_, _ = fmt.Fprintf(stdout, "Downloading %s...\n", assetName)
-	archiveData, err := downloadURL(assetURL, maxArchiveSize)
+	binaryBytes, err := fetchVerifiedBinary(rel, runtime.GOOS, runtime.GOARCH, trustedSigningKeys, stdout)
 	if err != nil {
-		return false, fmt.Errorf("failed downloading release archive: %w", err)
-	}
-
-	_, _ = fmt.Fprintf(stdout, "Verifying sha256 checksum...\n")
-	sumData, err := downloadURL(checksumURL, maxChecksumsSize)
-	if err != nil {
-		return false, fmt.Errorf("failed downloading checksums: %w", err)
-	}
-	if err := verifyChecksum(archiveData, assetName, string(sumData)); err != nil {
-		return false, fmt.Errorf("checksum verification failed: %w", err)
-	}
-	_, _ = fmt.Fprintf(stdout, "✔ Checksum verified\n")
-
-	_, _ = fmt.Fprintf(stdout, "Extracting binary...\n")
-	var binaryBytes []byte
-	if runtime.GOOS == "windows" {
-		binaryBytes, err = extractBinaryFromZip(archiveData, binName)
-	} else {
-		binaryBytes, err = extractBinaryFromTarGz(archiveData, binName)
-	}
-	if err != nil {
-		return false, fmt.Errorf("failed extracting binary: %w", err)
+		return false, err
 	}
 
 	path, err := ReplaceCurrentExecutable(binaryBytes)
@@ -287,6 +250,97 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", updatedBadge, rel.TagName, path)
 	_, _ = fmt.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
 	return true, nil
+}
+
+// fetchVerifiedBinary downloads the release archive for goos/goarch and returns
+// the sshx binary inside it, but only after the release's checksums.txt has a
+// valid signature from one of keys and the archive matches its checksum.
+func fetchVerifiedBinary(rel *ReleaseInfo, goos, goarch string, keys []string, stdout io.Writer) ([]byte, error) {
+	expectedExt := ".tar.gz"
+	binName := "sshx"
+	if goos == "windows" {
+		expectedExt = ".zip"
+		binName = "sshx.exe"
+	}
+
+	expectedPrefix := fmt.Sprintf("sshx_%s_%s_%s", rel.TagName, goos, goarch)
+	var assetURL, assetName, checksumURL, signatureURL string
+	for _, a := range rel.Assets {
+		switch {
+		case a.Name == checksumsAsset:
+			checksumURL = a.BrowserDownloadURL
+		case a.Name == signatureAsset:
+			signatureURL = a.BrowserDownloadURL
+		case strings.HasPrefix(a.Name, expectedPrefix) && strings.HasSuffix(a.Name, expectedExt):
+			assetURL = a.BrowserDownloadURL
+			assetName = a.Name
+		}
+	}
+
+	if assetURL == "" {
+		return nil, fmt.Errorf("no release asset found matching platform %s/%s for %s", goos, goarch, rel.TagName)
+	}
+	if checksumURL == "" {
+		return nil, fmt.Errorf("release %s has no %s; refusing to install an unverified binary", rel.TagName, checksumsAsset)
+	}
+	if signatureURL == "" {
+		return nil, fmt.Errorf("release %s is not signed (no %s); refusing to install an unverified binary", rel.TagName, signatureAsset)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "Verifying release signature...\n")
+	sumData, err := downloadURL(checksumURL, maxChecksumsSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed downloading checksums: %w", err)
+	}
+	sigData, err := downloadURL(signatureURL, maxSignatureSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed downloading signature: %w", err)
+	}
+	if err := verifySignature(sumData, sigData, keys); err != nil {
+		return nil, fmt.Errorf("signature verification failed: %w", err)
+	}
+	_, _ = fmt.Fprintf(stdout, "✔ Signature verified\n")
+
+	_, _ = fmt.Fprintf(stdout, "Downloading %s...\n", assetName)
+	archiveData, err := downloadURL(assetURL, maxArchiveSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed downloading release archive: %w", err)
+	}
+	if err := verifyChecksum(archiveData, assetName, string(sumData)); err != nil {
+		return nil, fmt.Errorf("checksum verification failed: %w", err)
+	}
+	_, _ = fmt.Fprintf(stdout, "✔ Checksum verified\n")
+
+	_, _ = fmt.Fprintf(stdout, "Extracting binary...\n")
+	var binaryBytes []byte
+	if goos == "windows" {
+		binaryBytes, err = extractBinaryFromZip(archiveData, binName)
+	} else {
+		binaryBytes, err = extractBinaryFromTarGz(archiveData, binName)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed extracting binary: %w", err)
+	}
+	return binaryBytes, nil
+}
+
+// verifySignature checks that sigFile holds a base64 Ed25519 signature of data
+// made by one of keys (base64 public keys).
+func verifySignature(data, sigFile []byte, keys []string) error {
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigFile)))
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		return errors.New("malformed signature")
+	}
+	for _, k := range keys {
+		pub, err := base64.StdEncoding.DecodeString(k)
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			continue
+		}
+		if ed25519.Verify(ed25519.PublicKey(pub), data, sig) {
+			return nil
+		}
+	}
+	return errors.New("signature does not match any trusted release key")
 }
 
 // readLimited reads all of r, failing if it holds more than limit bytes.
