@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -72,6 +75,27 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error deleting host: %v\n", err)
 				os.Exit(1)
 			}
+			return
+
+		case "clone", "dup", "duplicate":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "Usage: sshx clone <alias>")
+				os.Exit(1)
+			}
+			alias := args[1]
+			if _, err := CloneHostWizard(alias, homeDir); err != nil {
+				fmt.Fprintf(os.Stderr, "Error cloning host: %v\n", err)
+				os.Exit(1)
+			}
+			return
+
+		case "probe", "ping":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "Usage: sshx probe <alias>")
+				os.Exit(1)
+			}
+			alias := args[1]
+			probeHostCLI(alias, homeDir)
 			return
 
 		case "edit":
@@ -188,6 +212,8 @@ func printUsage() {
 	fmt.Println("  sshx ls                   List all configured SSH hosts")
 	fmt.Println("  sshx rm <alias>           Remove a host from ~/.ssh/config")
 	fmt.Println("  sshx edit [alias]         Edit host in wizard, or open ~/.ssh/config in $EDITOR")
+	fmt.Println("  sshx clone <alias>        Duplicate / clone an existing host")
+	fmt.Println("  sshx probe <alias>        Probe TCP reachability / ping host")
 	fmt.Println()
 	fmt.Println("TUI Keybindings:")
 	fmt.Println("  Enter      Connect to selected host")
@@ -312,4 +338,59 @@ func runCopyIDForHost(alias, homeDir string) {
 	}
 
 	copyKeyCmd(pubKey, targetHost.Port, user, host)
+}
+
+func probeHostCLI(alias, homeDir string) {
+	hosts, err := LoadAllHosts(homeDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading hosts: %v\n", err)
+		os.Exit(1)
+	}
+
+	var targetHost *HostItem
+	for _, h := range hosts {
+		if strings.EqualFold(h.Alias, alias) {
+			targetHost = &h
+			break
+		}
+		for _, a := range h.AllAliases {
+			if strings.EqualFold(a, alias) {
+				targetHost = &h
+				break
+			}
+		}
+		if targetHost != nil {
+			break
+		}
+	}
+
+	if targetHost == nil {
+		fmt.Fprintf(os.Stderr, "Host '%s' not found in SSH configuration.\n", alias)
+		os.Exit(1)
+	}
+
+	host := targetHost.HostName
+	if host == "" {
+		host = targetHost.Alias
+	}
+	host = strings.Trim(host, "[]")
+	port := targetHost.Port
+	if port <= 0 {
+		port = 22
+	}
+
+	target := net.JoinHostPort(host, strconv.Itoa(port))
+	fmt.Printf("Probing TCP reachability for %s (%s)...\n", targetHost.Alias, target)
+
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", target, 2*time.Second)
+	if err != nil {
+		badge := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#FF4672")).Padding(0, 1).Render(" UNREACHABLE ")
+		fmt.Printf("\n%s Failed to connect to %s: %v\n", badge, target, err)
+		os.Exit(1)
+	}
+	_ = conn.Close()
+	latency := time.Since(start).Milliseconds()
+	badge := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#5FD787")).Padding(0, 1).Render(" REACHABLE ")
+	fmt.Printf("\n%s Connected to %s in %dms\n", badge, target, latency)
 }

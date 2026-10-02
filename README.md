@@ -108,6 +108,12 @@ sshx add admin@10.0.0.5:2202 backup-node
 # Interactively edit an existing SSH host
 sshx edit prod-server
 
+# Duplicate / clone an existing SSH host
+sshx clone prod-server
+
+# Probe TCP reachability / ping host
+sshx probe prod-server
+
 # List all configured SSH hosts in terminal
 sshx ls
 

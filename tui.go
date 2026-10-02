@@ -110,8 +110,16 @@ func copyToClipboard(text string) {
 		cmd := exec.Command("xclip", "-selection", "clipboard")
 		cmd.Stdin = strings.NewReader(text)
 		_ = cmd.Run()
+	} else if _, err := exec.LookPath("xsel"); err == nil {
+		cmd := exec.Command("xsel", "--clipboard", "--input")
+		cmd.Stdin = strings.NewReader(text)
+		_ = cmd.Run()
 	} else if _, err := exec.LookPath("pbcopy"); err == nil {
 		cmd := exec.Command("pbcopy")
+		cmd.Stdin = strings.NewReader(text)
+		_ = cmd.Run()
+	} else if _, err := exec.LookPath("clip.exe"); err == nil {
+		cmd := exec.Command("clip.exe")
 		cmd.Stdin = strings.NewReader(text)
 		_ = cmd.Run()
 	}
@@ -129,6 +137,7 @@ func checkReachabilityCmd(alias, hostName string, port int) tea.Cmd {
 		if targetHost == "" {
 			targetHost = alias
 		}
+		targetHost = strings.Trim(targetHost, "[]")
 		targetPort := port
 		if targetPort <= 0 {
 			targetPort = 22
@@ -241,11 +250,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+		h := m.height - 3
+		if h < 5 {
+			h = 5
+		}
 		if m.width >= 100 {
 			listWidth := m.width * 52 / 100
-			m.list.SetSize(listWidth, m.height-3)
+			m.list.SetSize(listWidth, h)
 		} else {
-			m.list.SetSize(m.width-2, m.height-3)
+			listWidth := m.width - 2
+			if listWidth < 20 {
+				listWidth = 20
+			}
+			m.list.SetSize(listWidth, h)
 		}
 		return m, nil
 
@@ -254,7 +271,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pingStatus = make(map[string]string)
 		}
 		if msg.err != nil {
-			m.pingStatus[msg.alias] = "🔴 Unreachable"
+			if os.IsTimeout(msg.err) || strings.Contains(strings.ToLower(msg.err.Error()), "timeout") {
+				m.pingStatus[msg.alias] = "🔴 Timeout (>1.5s)"
+			} else {
+				m.pingStatus[msg.alias] = "🔴 Unreachable"
+			}
 		} else {
 			m.pingStatus[msg.alias] = fmt.Sprintf("🟢 Reachable (%dms)", msg.latency.Milliseconds())
 		}
@@ -270,11 +291,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "y", "Y":
 				if selected, ok := m.list.SelectedItem().(HostItem); ok {
 					configPath, err := ResolveHostConfigFile(selected.Alias, m.homeDir)
-					if err == nil {
-						_ = DeleteHostFromConfigFile(selected.Alias, configPath)
+					if err != nil {
+						m.statusMessage = fmt.Sprintf("✘ Failed to locate '%s': %v", selected.Alias, err)
+					} else if err := DeleteHostFromConfigFile(selected.Alias, configPath); err != nil {
+						m.statusMessage = fmt.Sprintf("✘ Error deleting '%s': %v", selected.Alias, err)
+					} else {
+						m.list.RemoveItem(m.list.Index())
+						m.statusMessage = fmt.Sprintf("✔ Deleted '%s'", selected.Alias)
 					}
-					m.list.RemoveItem(m.list.Index())
-					m.statusMessage = fmt.Sprintf("✔ Deleted '%s'", selected.Alias)
 				}
 				m.confirmDelete = false
 				return m, clearStatusCmd()
@@ -282,6 +306,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmDelete = false
 				m.statusMessage = "Deletion cancelled"
 				return m, clearStatusCmd()
+			case "ctrl+c":
+				m.quitting = true
+				m.action = "quit"
+				return m, tea.Quit
 			default:
 				return m, nil
 			}
@@ -380,19 +408,27 @@ func (m model) View() string {
 
 	// 1. Empty state
 	if len(m.list.Items()) == 0 {
+		cardContent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("📡 No SSH Hosts Found\n\n") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE")).Render("No configured hosts found in ~/.ssh/config.\n\n") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add your first host\n") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit")
+
+		if m.statusMessage != "" {
+			cardContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")).Bold(true).Render(m.statusMessage+"\n\n") + cardContent
+		}
+
 		emptyCard := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7D56F4")).
 			Padding(2, 4).
 			Align(lipgloss.Center).
-			Render(
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("📡 No SSH Hosts Found\n\n") +
-					lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE")).Render("No configured hosts found in ~/.ssh/config.\n\n") +
-					lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add your first host\n") +
-					lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n") +
-					lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit"),
-			)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, emptyCard)
+			Render(cardContent)
+
+		if m.width > 0 && m.height > 0 {
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, emptyCard)
+		}
+		return emptyCard
 	}
 
 	selected, hasSelection := m.list.SelectedItem().(HostItem)
@@ -426,10 +462,15 @@ func (m model) View() string {
 			rightWidth = 35
 		}
 
+		maxH := m.height - 3
+		if maxH < 5 {
+			maxH = 5
+		}
+
 		leftView := m.list.View()
 		rightView := rightPaneStyle.
 			Width(rightWidth).
-			MaxHeight(m.height - 3).
+			MaxHeight(maxH).
 			Render(inspectorContent)
 
 		return lipgloss.JoinHorizontal(lipgloss.Top, leftView, rightView)
@@ -437,8 +478,12 @@ func (m model) View() string {
 
 	// Compact mode (< 100 cols): Tab toggles between list view and inspector view
 	if m.showDetails {
+		maxH := m.height - 3
+		if maxH < 5 {
+			maxH = 5
+		}
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("⇥ Press [Tab] to return to Host List\n\n")
-		return detailBoxStyle.Width(m.width - 4).MaxHeight(m.height - 3).Render(header + inspectorContent)
+		return detailBoxStyle.Width(m.width - 4).MaxHeight(maxH).Render(header + inspectorContent)
 	}
 
 	if m.statusMessage != "" {
@@ -463,6 +508,20 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg string) str
 	if showRaw {
 		sb.WriteString(dimStyle.Render("── Raw OpenSSH Configuration ───────────\n"))
 		rawText := strings.Join(h.RawLines, "\n")
+		if strings.TrimSpace(rawText) == "" {
+			entry := HostEntry{
+				Alias:          h.Alias,
+				HostName:       h.HostName,
+				User:           h.User,
+				Port:           h.Port,
+				IdentityFile:   h.IdentityFile,
+				IdentitiesOnly: h.IdentitiesOnly,
+				PubkeyAuth:     h.PubkeyAuth,
+				PasswordAuth:   h.PasswordAuth,
+				ProxyJump:      h.ProxyJump,
+			}
+			rawText = strings.TrimRight(entry.Format(), "\n")
+		}
 		sb.WriteString(highlightConfigBlock(rawText))
 		sb.WriteString("\n\n" + dimStyle.Render("── Quick Actions ────────────────────────\n"))
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[v] Formatted View"))
@@ -601,6 +660,8 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 		list:       l,
 		keys:       keys,
 		homeDir:    homeDir,
+		width:      80,
+		height:     20,
 		pingStatus: make(map[string]string),
 	}
 

@@ -122,21 +122,33 @@ func highlightConfigBlock(block string) string {
 	valHost := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
 	kwDirective := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7"))
 	valDirective := lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE"))
+	commentStyle := lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#767676"))
 
 	for _, line := range strings.Split(strings.TrimRight(block, "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
+			lines = append(lines, "")
 			continue
 		}
-		parts := strings.SplitN(trimmed, " ", 2)
-		if len(parts) == 1 {
+		if strings.HasPrefix(trimmed, "#") {
+			indent := ""
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				indent = "    "
+			}
+			lines = append(lines, indent+commentStyle.Render(trimmed))
+			continue
+		}
+		idx := strings.IndexAny(trimmed, " \t")
+		if idx == -1 {
 			lines = append(lines, line)
 			continue
 		}
-		if strings.HasPrefix(line, "Host ") || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
-			lines = append(lines, fmt.Sprintf("%s %s", kwHost.Render(parts[0]), valHost.Render(parts[1])))
+		kw := trimmed[:idx]
+		val := strings.TrimSpace(trimmed[idx:])
+		if strings.EqualFold(kw, "Host") || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
+			lines = append(lines, fmt.Sprintf("%s %s", kwHost.Render(kw), valHost.Render(val)))
 		} else {
-			lines = append(lines, fmt.Sprintf("    %s %s", kwDirective.Render(parts[0]), valDirective.Render(parts[1])))
+			lines = append(lines, fmt.Sprintf("    %s %s", kwDirective.Render(kw), valDirective.Render(val)))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -742,6 +754,19 @@ func EditHostWizard(alias, homeDir string) (string, error) {
 	// Remove previous entry
 	cleaned := RemoveHost(existingContent, targetHost.Alias)
 	if newAlias != targetHost.Alias && HasHost(cleaned, newAlias) {
+		var overwrite bool
+		formOverwrite := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(fmt.Sprintf("Host alias '%s' already exists in SSH configuration. Overwrite?", newAlias)).
+					Description("Existing configuration for this alias will be replaced").
+					Value(&overwrite),
+			).Title("Host Conflict Warning"),
+		).WithTheme(theme)
+
+		if err := formOverwrite.Run(); err != nil || !overwrite {
+			return "", nil
+		}
 		cleaned = RemoveHost(cleaned, newAlias)
 	}
 

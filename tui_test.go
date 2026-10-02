@@ -253,3 +253,77 @@ func TestModelEmptyState(t *testing.T) {
 		t.Errorf("expected empty state card in view, got:\n%s", viewStr)
 	}
 }
+
+func TestModelInTUIDeletionCtrlC(t *testing.T) {
+	items := []list.Item{
+		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
+	}
+	l := list.New(items, newCustomDelegate(), 80, 20)
+	keys := newListKeyMap()
+	m := model{
+		list: l,
+		keys: keys,
+	}
+
+	// Press 'd' to enter confirmation
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	res := updated.(model)
+	if !res.confirmDelete {
+		t.Fatalf("expected confirmDelete to be true")
+	}
+
+	// Press 'ctrl+c' to quit
+	quitted, cmd := res.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Errorf("expected tea.Quit command on ctrl+c during confirmation")
+	}
+	resQuit := quitted.(model)
+	if !resQuit.quitting || resQuit.action != "quit" {
+		t.Errorf("expected quitting=true and action='quit', got quitting=%v, action=%q", resQuit.quitting, resQuit.action)
+	}
+}
+
+func TestModelPingTimeout(t *testing.T) {
+	items := []list.Item{
+		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
+	}
+	l := list.New(items, newCustomDelegate(), 80, 20)
+	keys := newListKeyMap()
+	m := model{
+		list: l,
+		keys: keys,
+	}
+
+	// Send timeout error
+	timeoutMsg := pingResultMsg{alias: "srv1", err: &timeoutErr{}}
+	updated, _ := m.Update(timeoutMsg)
+	res := updated.(model)
+	if !strings.Contains(res.pingStatus["srv1"], "Timeout") {
+		t.Errorf("expected timeout status, got %q", res.pingStatus["srv1"])
+	}
+}
+
+type timeoutErr struct{}
+
+func (e *timeoutErr) Error() string   { return "i/o timeout" }
+func (e *timeoutErr) Timeout() bool   { return true }
+func (e *timeoutErr) Temporary() bool { return true }
+
+func TestHighlightConfigBlockWithComments(t *testing.T) {
+	raw := `# Top level note
+Host test-srv
+    # Indented directive comment
+    HostName 10.0.0.1
+    Port 22`
+
+	highlighted := highlightConfigBlock(raw)
+	if !strings.Contains(highlighted, "# Top level note") {
+		t.Errorf("expected top level note in output")
+	}
+	if !strings.Contains(highlighted, "Host test-srv") {
+		t.Errorf("expected Host test-srv in output")
+	}
+	if !strings.Contains(highlighted, "# Indented directive comment") {
+		t.Errorf("expected indented comment in output")
+	}
+}
