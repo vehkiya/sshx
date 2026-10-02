@@ -78,6 +78,20 @@ func TestModelKeyActions(t *testing.T) {
 	if res2.action != "edit-config" {
 		t.Errorf("expected action 'edit-config', got %q", res2.action)
 	}
+
+	// 3. 'U' triggers upgrade
+	m3 := model{list: l, keys: keys, updateAvailable: "v0.4.0", width: 120, height: 30}
+	updated3, cmd3 := m3.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	if cmd3 == nil {
+		t.Errorf("expected tea.Quit command on 'U', got nil")
+	}
+	res3 := updated3.(model)
+	if res3.action != "upgrade" {
+		t.Errorf("expected action 'upgrade', got %q", res3.action)
+	}
+	if !strings.Contains(m3.View(), "UPDATE v0.4.0 AVAILABLE") {
+		t.Errorf("expected update banner in view, got:\n%s", m3.View())
+	}
 }
 
 func TestModelResponsiveTabToggle(t *testing.T) {
