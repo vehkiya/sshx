@@ -127,12 +127,44 @@ func (h HostEntry) Format() string {
 	return sb.String()
 }
 
-// FindConfigFiles gathers ~/.ssh/config and any included fragments in ~/.ssh/config.d/
+// FindConfigFiles gathers ~/.ssh/config, any files included via Include directives, and ~/.ssh/config.d/
 func FindConfigFiles(homeDir string) []string {
 	var files []string
+	seenFiles := make(map[string]bool)
+
+	addFile := func(p string) {
+		clean := filepath.Clean(p)
+		if !seenFiles[clean] {
+			if fi, err := os.Stat(clean); err == nil && !fi.IsDir() { //nolint:gosec // user SSH config path verification
+				seenFiles[clean] = true
+				files = append(files, clean)
+			}
+		}
+	}
+
 	mainConfig := filepath.Join(homeDir, ".ssh", "config")
 	if fi, err := os.Stat(mainConfig); err == nil && !fi.IsDir() {
-		files = append(files, mainConfig)
+		addFile(mainConfig)
+
+		// Parse any Include directives from main config
+		if data, err := os.ReadFile(filepath.Clean(mainConfig)); err == nil { //nolint:gosec // intentional user SSH config parsing
+			for _, line := range strings.Split(string(data), "\n") {
+				fields := strings.Fields(strings.TrimSpace(line))
+				if len(fields) >= 2 && strings.EqualFold(fields[0], "Include") {
+					pattern := fields[1]
+					if strings.HasPrefix(pattern, "~/") {
+						pattern = filepath.Join(homeDir, pattern[2:])
+					} else if !filepath.IsAbs(pattern) {
+						pattern = filepath.Join(homeDir, ".ssh", pattern)
+					}
+					if matches, err := filepath.Glob(pattern); err == nil {
+						for _, m := range matches {
+							addFile(m)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	for _, sub := range []string{"config.d", "conf.d"} {
@@ -141,7 +173,7 @@ func FindConfigFiles(homeDir string) []string {
 		if err == nil {
 			for _, e := range entries {
 				if !e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-					files = append(files, filepath.Join(dir, e.Name()))
+					addFile(filepath.Join(dir, e.Name()))
 				}
 			}
 		}
@@ -175,6 +207,9 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 					if currentHost.Port == 0 {
 						currentHost.Port = 22
 					}
+					for len(currentHost.RawLines) > 0 && strings.TrimSpace(currentHost.RawLines[len(currentHost.RawLines)-1]) == "" {
+						currentHost.RawLines = currentHost.RawLines[:len(currentHost.RawLines)-1]
+					}
 					hosts = append(hosts, *currentHost)
 				}
 			}
@@ -182,24 +217,28 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 		}
 
 		var pendingComments []string
+		var pendingCommentLines []string
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
 				if currentHost != nil {
 					currentHost.RawLines = append(currentHost.RawLines, line)
-				} else {
-					pendingComments = nil
 				}
 				continue
 			}
 			if strings.HasPrefix(trimmed, "#") {
-				if currentHost != nil {
+				isIndented := strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+				if isIndented && currentHost != nil {
 					currentHost.RawLines = append(currentHost.RawLines, line)
 				} else {
+					if currentHost != nil {
+						finishCurrent()
+					}
 					comment := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
 					if comment != "" {
 						pendingComments = append(pendingComments, comment)
 					}
+					pendingCommentLines = append(pendingCommentLines, line)
 				}
 				continue
 			}
@@ -224,6 +263,8 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 
 					if len(validAliases) > 0 {
 						notes := strings.Join(pendingComments, " ")
+						rawLines := append([]string{}, pendingCommentLines...)
+						rawLines = append(rawLines, line)
 						currentHost = &HostItem{
 							Alias:      validAliases[0],
 							AllAliases: validAliases,
@@ -231,11 +272,12 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 							PubkeyAuth: true,
 							ConfigFile: file,
 							Notes:      notes,
-							RawLines:   []string{line},
+							RawLines:   rawLines,
 						}
 					}
 				}
 				pendingComments = nil
+				pendingCommentLines = nil
 				continue
 			}
 
@@ -284,7 +326,7 @@ func LoadAllHosts(homeDir string) ([]HostItem, error) {
 	return hosts, nil
 }
 
-// ParseTarget parses strings such as "user@host:port" or "host:port".
+// ParseTarget parses strings such as "user@host:port", "[2001:db8::1]:port", or "host:port".
 func ParseTarget(input string) (user, host string, port int) {
 	input = strings.TrimSpace(input)
 	input = strings.TrimPrefix(input, "ssh://")
@@ -292,6 +334,24 @@ func ParseTarget(input string) (user, host string, port int) {
 	if idx := strings.Index(input, "@"); idx != -1 {
 		user = input[:idx]
 		input = input[idx+1:]
+	}
+
+	if strings.HasPrefix(input, "[") {
+		if end := strings.Index(input, "]"); end != -1 {
+			host = input[1:end]
+			remainder := input[end+1:]
+			if strings.HasPrefix(remainder, ":") {
+				if p, err := strconv.Atoi(remainder[1:]); err == nil && p > 0 && p <= 65535 {
+					port = p
+				}
+			}
+			return user, host, port
+		}
+	}
+
+	// If there are multiple colons and no brackets, it's an IPv6 address without port
+	if strings.Count(input, ":") > 1 {
+		return user, input, port
 	}
 
 	if idx := strings.LastIndex(input, ":"); idx != -1 {
@@ -311,7 +371,7 @@ func ParseTarget(input string) (user, host string, port int) {
 	return user, host, port
 }
 
-// HasHost checks whether the given alias exists in the configuration content.
+// HasHost checks whether the given alias exists in the configuration content (case-insensitive).
 func HasHost(content, alias string) bool {
 	targets := strings.Fields(alias)
 	if len(targets) == 0 {
@@ -319,7 +379,7 @@ func HasHost(content, alias string) bool {
 	}
 	targetMap := make(map[string]bool)
 	for _, t := range targets {
-		targetMap[t] = true
+		targetMap[strings.ToLower(t)] = true
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -328,7 +388,7 @@ func HasHost(content, alias string) bool {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && strings.EqualFold(fields[0], "Host") {
 			for _, pat := range fields[1:] {
-				if targetMap[pat] {
+				if targetMap[strings.ToLower(pat)] {
 					return true
 				}
 			}
@@ -337,7 +397,7 @@ func HasHost(content, alias string) bool {
 	return false
 }
 
-// RemoveHost removes any Host block matching the given alias.
+// RemoveHost removes any Host block matching the given alias (case-insensitive).
 func RemoveHost(content, alias string) string {
 	targets := strings.Fields(alias)
 	if len(targets) == 0 {
@@ -345,7 +405,7 @@ func RemoveHost(content, alias string) string {
 	}
 	targetMap := make(map[string]bool)
 	for _, t := range targets {
-		targetMap[t] = true
+		targetMap[strings.ToLower(t)] = true
 	}
 
 	lines := strings.Split(content, "\n")
@@ -360,7 +420,7 @@ func RemoveHost(content, alias string) string {
 			inSkipBlock = false
 			if strings.EqualFold(fields[0], "Host") {
 				for _, pat := range fields[1:] {
-					if targetMap[pat] {
+					if targetMap[strings.ToLower(pat)] {
 						inSkipBlock = true
 						break
 					}
