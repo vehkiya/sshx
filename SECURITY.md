@@ -31,6 +31,26 @@ I aim to acknowledge your report within 48 hours and provide an estimated timeli
 When using `sshx`:
 
 - **Permissions**: `sshx` strictly maintains `0600` permissions on `~/.ssh/config` and uses atomic temporary writes with random suffixes to prevent race conditions and file tampering. The previous version of every file it modifies is kept as a hidden `.<name>.sshx.bak` backup alongside it.
-- **Updates**: `sshx update` refuses to install a binary unless its SHA-256 checksum matches the release's `checksums.txt`. Release archives also carry GitHub build provenance attestations; verify a download with `gh attestation verify <archive> --repo vehkiya/sshx`.
+- **Updates**: `sshx update` refuses to install a binary unless the release's `checksums.txt` carries a valid Ed25519 signature (`checksums.txt.sig`) from a key built into sshx, and the archive's SHA-256 matches that file. Release archives also carry GitHub build provenance attestations; verify a download with `gh attestation verify <archive> --repo vehkiya/sshx`.
+
+## Release Signing
+
+Every release's `checksums.txt` is signed with the sshx release key:
+
+```text
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA8BjKVqaALl5z4zMcLMFM5Yvm+CZ7qyStyVqZZeefLMQ=
+-----END PUBLIC KEY-----
+```
+
+To verify a download manually, save the key above as `sshx-release.pub.pem`, then:
+
+```bash
+base64 -d checksums.txt.sig > checksums.sig
+openssl pkeyutl -verify -pubin -inkey sshx-release.pub.pem -rawin -in checksums.txt -sigfile checksums.sig
+sha256sum --check --ignore-missing checksums.txt
+```
+
+**Key rotation (maintainers):** installed binaries only trust the keys listed in `trustedSigningKeys` (`update.go`). Add the new public key there and ship a release still signed with the old key; once users have that release, switch the `SSHX_SIGNING_KEY` secret in the `release` environment to the new key and remove the old one from the list. The release workflow refuses to sign with a key that isn't listed.
 - **Passphrase Protection**: Always protect private keys with strong passphrases and use an SSH agent (or hardware security key) to handle decryption.
 - **Agent Hygiene**: Utilize `AddKeysToAgent yes` with appropriate key lifetimes or OS keychain integration to minimize key exposure in memory.

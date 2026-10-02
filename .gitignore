@@ -19,6 +19,10 @@ go.work.sum
 .vscode/
 .DS_Store
 
+# Key material (e.g. the release signing key) must never be committed
+*.pem
+*.key
+
 # Temporary files
 /tmp/
 *.tmp
