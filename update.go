@@ -244,16 +244,11 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 		}
 	}
 
-	badge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#5FD787")).
-		Padding(0, 1).
-		Render(" UPDATED ")
+	updatedBadge := badge(" UPDATED ", colorBlack, colorGreen)
 	infoStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#00D7D7")).
+		Foreground(colorCyan).
 		Bold(true)
-	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", badge, rel.TagName, path)
+	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", updatedBadge, rel.TagName, path)
 	_, _ = fmt.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
 	return true, nil
 }

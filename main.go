@@ -257,7 +257,7 @@ func pausePrompt() {
 }
 
 func printUsage() {
-	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Render("sshx — TUI SSH Connection Manager")
+	header := lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("sshx — TUI SSH Connection Manager")
 	fmt.Printf("%s\n\n", header)
 	fmt.Println("Usage:")
 	fmt.Println("  sshx                      Launch interactive host browser")
@@ -299,7 +299,7 @@ func listHosts(homeDir string) {
 		return
 	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorPurple)
 	fmt.Printf("%-20s %-30s %-16s %s\n",
 		headerStyle.Render("ALIAS"),
 		headerStyle.Render("TARGET"),
@@ -353,15 +353,8 @@ func openEditor(homeDir string) {
 
 func runCopyIDForHost(alias, homeDir string) {
 	hosts, _ := LoadAllHosts(homeDir)
-	var targetHost *HostItem
-	for _, h := range hosts {
-		if strings.EqualFold(h.Alias, alias) {
-			targetHost = &h
-			break
-		}
-	}
-
-	if targetHost == nil {
+	targetHost, ok := FindHost(hosts, alias)
+	if !ok {
 		fmt.Printf("Host '%s' not found.\n", alias)
 		return
 	}
@@ -373,27 +366,20 @@ func runCopyIDForHost(alias, homeDir string) {
 			key = keys[0]
 		}
 	}
-
-	if key != "" && strings.HasPrefix(key, "~/") {
-		key = filepath.Join(homeDir, key[2:])
+	if key == "" {
+		fmt.Println("No SSH key found to copy; add one with 'sshx edit' or ssh-keygen.")
+		return
 	}
 
-	pubKey := key + ".pub"
+	pubKey := expandHome(key, homeDir) + ".pub"
 	if _, err := os.Stat(pubKey); err != nil {
 		fmt.Printf("Public key %s not found.\n", pubKey)
 		return
 	}
 
-	user := targetHost.User
-	if user == "" {
-		user = os.Getenv("USER")
+	if err := copyPublicKey(pubKey, targetHost.Alias); err != nil {
+		fmt.Fprintf(os.Stderr, "Copying public key failed: %v\n", err)
 	}
-	host := targetHost.HostName
-	if host == "" {
-		host = targetHost.Alias
-	}
-
-	copyKeyCmd(pubKey, targetHost.Port, user, host)
 }
 
 func probeHostCLI(alias, homeDir string) {
@@ -441,12 +427,12 @@ func probeHostCLI(alias, homeDir string) {
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", target, 2*time.Second)
 	if err != nil {
-		badge := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#FF4672")).Padding(0, 1).Render(" UNREACHABLE ")
-		fmt.Printf("\n%s Failed to connect to %s: %v\n", badge, target, err)
+		failBadge := badge(" UNREACHABLE ", colorWhite, colorRed)
+		fmt.Printf("\n%s Failed to connect to %s: %v\n", failBadge, target, err)
 		os.Exit(1)
 	}
 	_ = conn.Close()
 	latency := time.Since(start).Milliseconds()
-	badge := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#5FD787")).Padding(0, 1).Render(" REACHABLE ")
-	fmt.Printf("\n%s Connected to %s in %dms\n", badge, target, latency)
+	okBadge := badge(" REACHABLE ", colorBlack, colorGreen)
+	fmt.Printf("\n%s Connected to %s in %dms\n", okBadge, target, latency)
 }

@@ -1,0 +1,76 @@
+package main
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestBuildEntryUnchangedFormIsNoOp(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator)+"home", "u")
+	keyPath := filepath.Join(home, ".ssh", "id_ed25519")
+
+	tests := []HostEntry{
+		{Alias: "key", HostName: "k.lan", Port: 22, IdentityFile: "~/.ssh/id_ed25519", PubkeyAuth: true},
+		{Alias: "abs", HostName: "a.lan", Port: 2222, IdentityFile: keyPath, IdentitiesOnly: true, PubkeyAuth: true},
+		{Alias: "mixed", HostName: "m.lan", Port: 22, PubkeyAuth: true, PasswordAuth: true},
+		{Alias: "pw", HostName: "p.lan", User: "root", Port: 22, PasswordAuth: true},
+		{Alias: "agent", HostName: "d.lan", Port: 22, PubkeyAuth: true, ProxyJump: "bastion"},
+	}
+	for _, prev := range tests {
+		identity := ""
+		if authMethodOf(prev) == authKey {
+			// selectOrGenerateKey returns the expanded path of the current key.
+			identity = expandHome(prev.IdentityFile, home)
+		}
+		got := buildEntry(formValuesFromEntry(prev), identity, home, &prev)
+		if got != prev {
+			t.Errorf("unchanged form for %q produced %+v; expected %+v", prev.Alias, got, prev)
+		}
+	}
+}
+
+func TestBuildEntryAuthChanges(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator)+"home", "u")
+	prev := HostEntry{Alias: "h", HostName: "h.lan", Port: 22, PubkeyAuth: true, PasswordAuth: true}
+
+	v := formValuesFromEntry(prev)
+	v.auth = authKey
+	got := buildEntry(v, filepath.Join(home, ".ssh", "id_new"), home, &prev)
+	if got.IdentityFile != "~/.ssh/id_new" || !got.IdentitiesOnly || !got.PubkeyAuth || got.PasswordAuth {
+		t.Errorf("unexpected entry after switching to key auth: %+v", got)
+	}
+
+	v.auth = authPassword
+	v.alias = "  h   h2 "
+	got = buildEntry(v, "", home, nil)
+	if got.PubkeyAuth || !got.PasswordAuth || got.IdentityFile != "" || got.Alias != "h h2" {
+		t.Errorf("unexpected entry for password auth: %+v", got)
+	}
+}
+
+func TestValidateAlias(t *testing.T) {
+	for _, ok := range []string{"prod", "prod prod.lan", "10.0.0.1"} {
+		if err := validateAlias(ok); err != nil {
+			t.Errorf("validateAlias(%q) = %v; expected nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "   ", "*.lan", "web?", "!web", "-oProxyCommand=x", `"quoted"`} {
+		if err := validateAlias(bad); err == nil {
+			t.Errorf("validateAlias(%q) = nil; expected an error", bad)
+		}
+	}
+	if err := validateHostName("two words"); err == nil {
+		t.Errorf("expected hostnames with spaces to be rejected")
+	}
+}
+
+func TestHostSection(t *testing.T) {
+	section := hostSection(sharedConfig, "beta")
+	if section != "Host beta\n    HostName beta.lan" {
+		t.Errorf("unexpected section: %q", section)
+	}
+	if !strings.HasPrefix(hostSection(sharedConfig, "10.10.1.218"), "Host fortress 10.10.1.218") {
+		t.Errorf("expected lookup by secondary alias to find the fortress section")
+	}
+}

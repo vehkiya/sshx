@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -14,115 +15,104 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Authentication strategies offered by the host wizards.
+const (
+	authKey      = "key"
+	authPassword = "password"
+	authDefault  = "default"
+)
+
+// remoteAppendKey installs a public key read from stdin into authorized_keys,
+// skipping duplicates. It is the fallback when ssh-copy-id is unavailable.
+const remoteAppendKey = `exec sh -c 'umask 077; mkdir -p ~/.ssh && k=$(cat) && touch ~/.ssh/authorized_keys && { grep -qxF "$k" ~/.ssh/authorized_keys || printf "%s\n" "$k" >> ~/.ssh/authorized_keys; }'`
+
 // customHuhTheme returns an aligned Lip Gloss theme matching the sshx design system.
 func customHuhTheme() *huh.Theme {
 	t := huh.ThemeBase()
 
-	var (
-		purple    = lipgloss.Color("#7D56F4")
-		coral     = lipgloss.Color("#FF5F87")
-		cyan      = lipgloss.Color("#00D7D7")
-		green     = lipgloss.Color("#5FD787")
-		dim       = lipgloss.Color("#767676")
-		darkGray  = lipgloss.Color("#262626")
-		lightGray = lipgloss.Color("#EEEEEE")
-		white     = lipgloss.Color("#FFFFFF")
-		red       = lipgloss.Color("#FF4672")
-	)
-
 	// Left border indicator on focused fields
-	t.Focused.Base = t.Focused.Base.BorderForeground(purple)
+	t.Focused.Base = t.Focused.Base.BorderForeground(colorPurple)
 	t.Focused.Card = t.Focused.Base
-	t.Focused.Title = lipgloss.NewStyle().Bold(true).Foreground(coral)
-	t.Focused.Description = lipgloss.NewStyle().Foreground(dim)
-	t.Focused.Directory = lipgloss.NewStyle().Foreground(cyan)
+	t.Focused.Title = lipgloss.NewStyle().Bold(true).Foreground(colorCoral)
+	t.Focused.Description = lipgloss.NewStyle().Foreground(colorDim)
+	t.Focused.Directory = lipgloss.NewStyle().Foreground(colorCyan)
 
 	// Validation errors
-	t.Focused.ErrorIndicator = lipgloss.NewStyle().Bold(true).Foreground(red).SetString(" ✘")
-	t.Focused.ErrorMessage = lipgloss.NewStyle().Foreground(red)
+	t.Focused.ErrorIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorRed).SetString(" ✘")
+	t.Focused.ErrorMessage = lipgloss.NewStyle().Foreground(colorRed)
 
 	// Select / Options
-	t.Focused.SelectSelector = lipgloss.NewStyle().Bold(true).Foreground(coral).SetString("› ")
-	t.Focused.NextIndicator = lipgloss.NewStyle().Foreground(coral).MarginLeft(1).SetString("→")
-	t.Focused.PrevIndicator = lipgloss.NewStyle().Foreground(coral).MarginRight(1).SetString("←")
-	t.Focused.Option = lipgloss.NewStyle().Foreground(lightGray)
+	t.Focused.SelectSelector = lipgloss.NewStyle().Bold(true).Foreground(colorCoral).SetString("› ")
+	t.Focused.NextIndicator = lipgloss.NewStyle().Foreground(colorCoral).MarginLeft(1).SetString("→")
+	t.Focused.PrevIndicator = lipgloss.NewStyle().Foreground(colorCoral).MarginRight(1).SetString("←")
+	t.Focused.Option = lipgloss.NewStyle().Foreground(colorLightGray)
 
 	// Multi-select / Checkboxes
-	t.Focused.MultiSelectSelector = lipgloss.NewStyle().Bold(true).Foreground(coral).SetString("› ")
-	t.Focused.SelectedOption = lipgloss.NewStyle().Bold(true).Foreground(green)
-	t.Focused.SelectedPrefix = lipgloss.NewStyle().Bold(true).Foreground(green).SetString("✔ ")
-	t.Focused.UnselectedPrefix = lipgloss.NewStyle().Foreground(dim).SetString("• ")
-	t.Focused.UnselectedOption = lipgloss.NewStyle().Foreground(dim)
+	t.Focused.MultiSelectSelector = lipgloss.NewStyle().Bold(true).Foreground(colorCoral).SetString("› ")
+	t.Focused.SelectedOption = lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
+	t.Focused.SelectedPrefix = lipgloss.NewStyle().Bold(true).Foreground(colorGreen).SetString("✔ ")
+	t.Focused.UnselectedPrefix = lipgloss.NewStyle().Foreground(colorDim).SetString("• ")
+	t.Focused.UnselectedOption = lipgloss.NewStyle().Foreground(colorDim)
 
 	// Confirm buttons
 	button := lipgloss.NewStyle().
 		Padding(0, 2).
 		MarginRight(1).
 		Bold(true)
-	t.Focused.FocusedButton = button.Foreground(white).Background(purple)
-	t.Focused.BlurredButton = button.Foreground(dim).Background(darkGray)
+	t.Focused.FocusedButton = button.Foreground(colorWhite).Background(colorPurple)
+	t.Focused.BlurredButton = button.Foreground(colorDim).Background(colorDarkGray)
 
 	// Text Inputs
-	t.Focused.TextInput.Cursor = lipgloss.NewStyle().Foreground(cyan)
-	t.Focused.TextInput.Placeholder = lipgloss.NewStyle().Foreground(dim)
-	t.Focused.TextInput.Prompt = lipgloss.NewStyle().Bold(true).Foreground(cyan).SetString("› ")
-	t.Focused.TextInput.Text = lipgloss.NewStyle().Foreground(lightGray)
+	t.Focused.TextInput.Cursor = lipgloss.NewStyle().Foreground(colorCyan)
+	t.Focused.TextInput.Placeholder = lipgloss.NewStyle().Foreground(colorDim)
+	t.Focused.TextInput.Prompt = lipgloss.NewStyle().Bold(true).Foreground(colorCyan).SetString("› ")
+	t.Focused.TextInput.Text = lipgloss.NewStyle().Foreground(colorLightGray)
 
 	// Blurred field styles (when navigating between inputs in a group)
 	t.Blurred = t.Focused
 	t.Blurred.Base = t.Focused.Base.BorderStyle(lipgloss.HiddenBorder())
 	t.Blurred.Card = t.Blurred.Base
-	t.Blurred.Title = lipgloss.NewStyle().Foreground(dim)
-	t.Blurred.Description = lipgloss.NewStyle().Foreground(dim)
-	t.Blurred.TextInput.Prompt = lipgloss.NewStyle().Foreground(dim).SetString("  ")
-	t.Blurred.TextInput.Text = lipgloss.NewStyle().Foreground(lightGray)
-	t.Blurred.Option = lipgloss.NewStyle().Foreground(dim)
+	t.Blurred.Title = lipgloss.NewStyle().Foreground(colorDim)
+	t.Blurred.Description = lipgloss.NewStyle().Foreground(colorDim)
+	t.Blurred.TextInput.Prompt = lipgloss.NewStyle().Foreground(colorDim).SetString("  ")
+	t.Blurred.TextInput.Text = lipgloss.NewStyle().Foreground(colorLightGray)
+	t.Blurred.Option = lipgloss.NewStyle().Foreground(colorDim)
 
 	// Group Title & Description
 	t.Group.Title = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(purple).
+		Foreground(colorPurple).
 		MarginBottom(1)
 	t.Group.Description = lipgloss.NewStyle().
-		Foreground(dim).
+		Foreground(colorDim).
 		MarginBottom(1)
 
 	// Help styles
-	t.Help.ShortKey = lipgloss.NewStyle().Bold(true).Foreground(cyan)
-	t.Help.ShortDesc = lipgloss.NewStyle().Foreground(dim)
-	t.Help.ShortSeparator = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
-	t.Help.FullKey = lipgloss.NewStyle().Bold(true).Foreground(cyan)
-	t.Help.FullDesc = lipgloss.NewStyle().Foreground(dim)
-	t.Help.FullSeparator = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
+	t.Help.ShortKey = lipgloss.NewStyle().Bold(true).Foreground(colorCyan)
+	t.Help.ShortDesc = lipgloss.NewStyle().Foreground(colorDim)
+	t.Help.ShortSeparator = lipgloss.NewStyle().Foreground(colorSeparator)
+	t.Help.FullKey = lipgloss.NewStyle().Bold(true).Foreground(colorCyan)
+	t.Help.FullDesc = lipgloss.NewStyle().Foreground(colorDim)
+	t.Help.FullSeparator = lipgloss.NewStyle().Foreground(colorSeparator)
 
 	return t
 }
 
-func renderWizardHeader() {
-	badge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#7D56F4")).
-		Padding(0, 1).
-		Render("🚀 SSHX")
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FF5F87")).
-		Render(" Add New SSH Connection")
-	desc := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#767676")).
-		Render("Configure and register a remote host in ~/.ssh/config")
-
-	fmt.Printf("\n%s%s\n%s\n\n", badge, title, desc)
+func renderWizardHeader(label string, fg, bg lipgloss.Color, title, desc string) {
+	fmt.Printf("\n%s%s\n%s\n\n",
+		badge(label, fg, bg),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render(" "+title),
+		lipgloss.NewStyle().Foreground(colorDim).Render(desc),
+	)
 }
 
 func highlightConfigBlock(block string) string {
 	var lines []string
-	kwHost := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87"))
-	valHost := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
-	kwDirective := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7"))
-	valDirective := lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE"))
-	commentStyle := lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#767676"))
+	kwHost := lipgloss.NewStyle().Bold(true).Foreground(colorCoral)
+	valHost := lipgloss.NewStyle().Bold(true).Foreground(colorWhite)
+	kwDirective := lipgloss.NewStyle().Bold(true).Foreground(colorCyan)
+	valDirective := lipgloss.NewStyle().Foreground(colorLightGray)
+	commentStyle := lipgloss.NewStyle().Italic(true).Foreground(colorDim)
 
 	for _, line := range strings.Split(strings.TrimRight(block, "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -154,306 +144,561 @@ func highlightConfigBlock(block string) string {
 	return strings.Join(lines, "\n")
 }
 
-// AddHostWizard runs the interactive Huh wizard to configure and add a host.
-// Returns the added alias and whether the user asked to connect immediately.
-func AddHostWizard(posTarget, posAlias, homeDir string, promptConnect bool) (alias string, connectNow bool, err error) {
-	renderWizardHeader()
+// wizardMode selects the wording and field order of the shared host form.
+type wizardMode int
 
-	defaultUsername := os.Getenv("USER")
-	if defaultUsername == "" {
-		if u, err := user.Current(); err == nil {
-			defaultUsername = u.Username
-		}
-	}
+const (
+	wizardAdd wizardMode = iota
+	wizardEdit
+	wizardClone
+)
 
-	targetUser, targetHost, targetPort := ParseTarget(posTarget)
+type hostFormText struct {
+	step, stepDesc, authDesc                string
+	aliasTitle, aliasDesc, aliasPlaceholder string
+	hostDesc, hostPlaceholder               string
+}
 
-	hostName := targetHost
-	userName := targetUser
-	if userName == "" {
-		userName = defaultUsername
-	}
+var hostFormTexts = map[wizardMode]hostFormText{
+	wizardAdd: {
+		step: "Step 1: Host Details", stepDesc: "Enter target server connection parameters", authDesc: "Select your authentication strategy",
+		aliasTitle: "Host Alias", aliasDesc: "Nickname used with ssh <alias> and sshx", aliasPlaceholder: "e.g. prod-server",
+		hostDesc: "FQDN or IP address of the remote host", hostPlaceholder: "e.g. 192.168.1.100 or server.example.com",
+	},
+	wizardEdit: {
+		step: "Step 1: Edit Host Details", stepDesc: "Update target connection parameters", authDesc: "Select authentication strategy",
+		aliasTitle: "Host Alias", aliasDesc: "Nickname used with ssh <alias> and sshx", aliasPlaceholder: "e.g. prod-server",
+		hostDesc: "FQDN or IP address of the remote host", hostPlaceholder: "e.g. 192.168.1.100 or server.example.com",
+	},
+	wizardClone: {
+		step: "Step 1: Duplicate Host Parameters", stepDesc: "Customize details for the cloned host", authDesc: "Select authentication strategy",
+		aliasTitle: "New Host Alias", aliasDesc: "Unique nickname for this duplicated host", aliasPlaceholder: "e.g. prod-server-backup",
+		hostDesc: "FQDN or IP address of the target server", hostPlaceholder: "e.g. 192.168.1.101",
+	},
+}
 
-	port := targetPort
-	if port == 0 {
+// hostFormValues holds the fields edited by the add, edit and clone wizards.
+type hostFormValues struct {
+	alias, hostName, user, port, proxyJump, auth string
+}
+
+func formValuesFromEntry(e HostEntry) hostFormValues {
+	port := e.Port
+	if port <= 0 {
 		port = 22
 	}
-	portStr := strconv.Itoa(port)
+	return hostFormValues{
+		alias:     e.Alias,
+		hostName:  e.HostName,
+		user:      e.User,
+		port:      strconv.Itoa(port),
+		proxyJump: e.ProxyJump,
+		auth:      authMethodOf(e),
+	}
+}
 
-	alias = posAlias
-	if alias == "" && hostName != "" {
-		alias = hostName
+// authMethodOf classifies a host's authentication settings into a wizard option.
+func authMethodOf(e HostEntry) string {
+	switch {
+	case !e.PubkeyAuth || e.PasswordAuth:
+		return authPassword
+	case e.IdentityFile != "":
+		return authKey
+	default:
+		return authDefault
+	}
+}
+
+func validateAlias(s string) error {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return errors.New("host alias is required")
+	}
+	for _, f := range fields {
+		if strings.HasPrefix(f, "-") {
+			return fmt.Errorf("alias %q cannot start with '-'", f)
+		}
+		if !isConcreteAlias(f) || strings.ContainsAny(f, `"'`) {
+			return fmt.Errorf("alias %q cannot contain wildcards or quotes", f)
+		}
+	}
+	return nil
+}
+
+func validateHostName(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return errors.New("hostname is required")
+	}
+	if strings.ContainsAny(s, " \t") {
+		return errors.New("hostname cannot contain spaces")
+	}
+	return nil
+}
+
+func validatePort(s string) error {
+	p, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || p <= 0 || p > 65535 {
+		return errors.New("port must be between 1 and 65535")
+	}
+	return nil
+}
+
+// runHostForm shows the connection and authentication steps shared by all host wizards.
+func runHostForm(mode wizardMode, v *hostFormValues, theme *huh.Theme) error {
+	text := hostFormTexts[mode]
+
+	hostInput := huh.NewInput().
+		Title("HostName / IP").
+		Description(text.hostDesc).
+		Placeholder(text.hostPlaceholder).
+		Value(&v.hostName).
+		Validate(validateHostName)
+	aliasInput := huh.NewInput().
+		Title(text.aliasTitle).
+		Description(text.aliasDesc).
+		Placeholder(text.aliasPlaceholder).
+		Value(&v.alias).
+		Validate(validateAlias)
+	userInput := huh.NewInput().
+		Title("User").
+		Description("Remote login username").
+		Placeholder(currentUsername()).
+		Value(&v.user)
+	portInput := huh.NewInput().
+		Title("Port").
+		Description("SSH port (standard is 22)").
+		Placeholder("22").
+		Value(&v.port).
+		Validate(validatePort)
+	proxyInput := huh.NewInput().
+		Title("ProxyJump").
+		Description("Optional jump host or bastion (e.g. bastion.lan)").
+		Placeholder("leave blank for direct connection").
+		Value(&v.proxyJump)
+
+	fields := []huh.Field{hostInput, aliasInput, userInput, portInput, proxyInput}
+	if mode == wizardClone {
+		fields[0], fields[1] = aliasInput, hostInput
 	}
 
-	theme := customHuhTheme()
-	sshDir := filepath.Join(homeDir, ".ssh")
-	configPath := filepath.Join(sshDir, "config")
-
-	authMethod := "key"
-	identityFile := ""
-	proxyJump := ""
-
-	// Step 1: Host configuration form
-	formHost := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("HostName / IP").
-				Description("FQDN or IP address of the remote host").
-				Placeholder("e.g. 192.168.1.100 or server.example.com").
-				Value(&hostName).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return errors.New("hostname is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("Host Alias").
-				Description("Nickname used with ssh <alias> and sshx").
-				Placeholder("e.g. prod-server").
-				Value(&alias).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return errors.New("host alias is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("User").
-				Description("Remote login username").
-				Placeholder(defaultUsername).
-				Value(&userName),
-			huh.NewInput().
-				Title("Port").
-				Description("SSH port (standard is 22)").
-				Placeholder("22").
-				Value(&portStr).
-				Validate(func(s string) error {
-					p, err := strconv.Atoi(strings.TrimSpace(s))
-					if err != nil || p <= 0 || p > 65535 {
-						return errors.New("port must be between 1 and 65535")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("ProxyJump").
-				Description("Optional jump host or bastion (e.g. bastion.lan)").
-				Placeholder("leave blank for direct connection").
-				Value(&proxyJump),
-		).Title("Step 1: Host Details").Description("Enter target server connection parameters"),
+	return huh.NewForm(
+		huh.NewGroup(fields...).Title(text.step).Description(text.stepDesc),
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Authentication Method").
 				Description("Choose how you connect to this server").
 				Options(
-					huh.NewOption("SSH Key (IdentityFile) [Recommended]", "key"),
-					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", "password"),
-					huh.NewOption("Standard / Default (agent keys with password fallback)", "default"),
+					huh.NewOption("SSH Key (IdentityFile) [Recommended]", authKey),
+					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", authPassword),
+					huh.NewOption("Standard / Default (agent keys with password fallback)", authDefault),
 				).
-				Value(&authMethod),
-		).Title("Step 2: Authentication").Description("Select your authentication strategy"),
-	).WithTheme(theme)
+				Value(&v.auth),
+		).Title("Step 2: Authentication").Description(text.authDesc),
+	).WithTheme(theme).Run()
+}
 
-	if err := formHost.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return "", false, nil
+// buildEntry turns form values into a HostEntry. When prev is given and the
+// authentication method is unchanged, prev's authentication settings are kept
+// so an edit only rewrites what the user actually changed.
+func buildEntry(v hostFormValues, identityFile, homeDir string, prev *HostEntry) HostEntry {
+	port, _ := strconv.Atoi(strings.TrimSpace(v.port))
+	e := HostEntry{
+		Alias:     strings.Join(strings.Fields(v.alias), " "),
+		HostName:  strings.TrimSpace(v.hostName),
+		User:      strings.TrimSpace(v.user),
+		Port:      port,
+		ProxyJump: strings.TrimSpace(v.proxyJump),
+	}
+
+	if prev != nil && v.auth == authMethodOf(*prev) {
+		e.IdentityFile = prev.IdentityFile
+		e.IdentitiesOnly = prev.IdentitiesOnly
+		e.PubkeyAuth = prev.PubkeyAuth
+		e.PasswordAuth = prev.PasswordAuth
+		e.PreferredAuths = prev.PreferredAuths
+		if v.auth == authKey && !sameFile(identityFile, prev.IdentityFile, homeDir) {
+			e.IdentityFile = shortenHome(identityFile, homeDir)
 		}
-		return "", false, err
+		return e
 	}
 
-	if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p > 0 {
-		port = p
+	switch v.auth {
+	case authPassword:
+		e.PasswordAuth = true
+	case authDefault:
+		e.PubkeyAuth = true
+	case authKey:
+		e.PubkeyAuth = true
+		e.IdentityFile = shortenHome(identityFile, homeDir)
+		e.IdentitiesOnly = e.IdentityFile != ""
 	}
+	return e
+}
 
-	// Step 2: Handle key selection if key authentication was chosen
-	if authMethod == "key" {
-		keyPath, err := selectOrGenerateKey(homeDir, sshDir, "", alias, userName, hostName, port, theme)
-		if err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
-				return "", false, nil
-			}
-			return "", false, err
+func sameFile(a, b, homeDir string) bool {
+	return filepath.Clean(expandHome(a, homeDir)) == filepath.Clean(expandHome(b, homeDir))
+}
+
+func primaryAlias(alias string) string {
+	if fields := strings.Fields(alias); len(fields) > 0 {
+		return fields[0]
+	}
+	return alias
+}
+
+func currentUsername() string {
+	if name := os.Getenv("USER"); name != "" {
+		return name
+	}
+	if u, err := user.Current(); err == nil {
+		// Windows reports DOMAIN\user; ssh expects the bare user name.
+		return u.Username[strings.LastIndex(u.Username, `\`)+1:]
+	}
+	return ""
+}
+
+// ignoreAbort treats a cancelled form as a clean exit.
+func ignoreAbort(err error) error {
+	if errors.Is(err, huh.ErrUserAborted) {
+		return nil
+	}
+	return err
+}
+
+// confirm asks a yes/no question; an aborted prompt counts as "no".
+func confirm(group, title, description string, theme *huh.Theme) bool {
+	var ok bool
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(title).
+				Description(description).
+				Value(&ok),
+		).Title(group),
+	).WithTheme(theme).Run()
+	return err == nil && ok
+}
+
+func confirmOverwrite(alias, configPath, homeDir string, theme *huh.Theme) bool {
+	return confirm("Host Conflict Warning",
+		fmt.Sprintf("Host alias '%s' already exists in %s. Overwrite?", alias, shortenHome(configPath, homeDir)),
+		"Existing configuration for this alias will be replaced",
+		theme)
+}
+
+func readConfig(configPath string) string {
+	data, err := os.ReadFile(filepath.Clean(configPath)) //nolint:gosec // user SSH config path
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// hostSection returns the text of the first Host section listing alias.
+func hostSection(content, alias string) string {
+	lines := strings.Split(content, "\n")
+	for _, b := range parseHostBlocks(lines) {
+		if b.has(alias) {
+			return strings.Join(lines[b.start:b.end], "\n")
 		}
-		identityFile = keyPath
 	}
+	return ""
+}
 
-	// Step 3: Format and save configuration
-	pubkeyAuth := true
-	passwordAuth := false
-
-	switch authMethod {
-	case "password":
-		pubkeyAuth = false
-		passwordAuth = true
-		identityFile = ""
-	case "default":
-		pubkeyAuth = true
-		passwordAuth = false
-		identityFile = ""
-	case "key":
-		pubkeyAuth = true
-		passwordAuth = false
-	}
-
-	formattedKey := identityFile
-	if strings.HasPrefix(identityFile, homeDir) {
-		formattedKey = "~" + identityFile[len(homeDir):]
-	}
-
-	entry := HostEntry{
-		Alias:          alias,
-		HostName:       hostName,
-		User:           userName,
-		Port:           port,
-		IdentityFile:   formattedKey,
-		IdentitiesOnly: formattedKey != "",
-		PubkeyAuth:     pubkeyAuth,
-		PasswordAuth:   passwordAuth,
-		ProxyJump:      strings.TrimSpace(proxyJump),
-	}
-
-	var existingContent string
-	if data, err := os.ReadFile(filepath.Clean(configPath)); err == nil { //nolint:gosec // user SSH config path
-		existingContent = string(data)
-	}
-
-	if HasHost(existingContent, alias) {
-		var overwrite bool
-		formOverwrite := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title(fmt.Sprintf("Host alias '%s' already exists in ~/.ssh/config. Overwrite?", alias)).
-					Description("Existing configuration for this alias will be replaced").
-					Value(&overwrite),
-			).Title("Host Conflict Warning"),
-		).WithTheme(theme)
-
-		if err := formOverwrite.Run(); err != nil || !overwrite {
-			return "", false, nil
-		}
-		existingContent = RemoveHost(existingContent, alias)
-	}
-
-	formattedBlock := entry.Format()
-	newContent := InsertHost(existingContent, formattedBlock)
-
-	if err := AtomicWrite(configPath, []byte(newContent), 0600); err != nil {
-		return "", false, fmt.Errorf("failed writing to %s: %w", configPath, err)
-	}
-
-	successBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#5FD787")).
-		Padding(0, 1).
-		Render(" ✔ SAVED ")
-
-	successTitle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#5FD787")).
-		Render(fmt.Sprintf(" Successfully written to %s", configPath))
-
+func printSavedCard(label, message, block string) {
 	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7D56F4")).
+		BorderForeground(colorPurple).
 		Padding(0, 2).
 		MarginTop(1).
 		MarginBottom(1).
-		Render(highlightConfigBlock(formattedBlock))
+		Render(highlightConfigBlock(block))
 
 	fmt.Println()
-	fmt.Printf("%s%s\n", successBadge, successTitle)
+	fmt.Printf("%s%s\n", badge(label, colorBlack, colorGreen), lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(" "+message))
 	fmt.Println(card)
+}
 
-	if promptConnect {
-		connectTarget := strings.Fields(alias)[0]
-		formConnect := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title(fmt.Sprintf("Connect to '%s' now?", connectTarget)).
-					Description(fmt.Sprintf("Starts interactive session: ssh %s", connectTarget)).
-					Value(&connectNow),
-			).Title("Quick Connect"),
-		).WithTheme(theme)
+// AddHostWizard runs the interactive Huh wizard to configure and add a host.
+// Returns the added alias and whether the user asked to connect immediately.
+func AddHostWizard(posTarget, posAlias, homeDir string, promptConnect bool) (alias string, connectNow bool, err error) {
+	renderWizardHeader("🚀 SSHX", colorWhite, colorPurple, "Add New SSH Connection", "Configure and register a remote host in ~/.ssh/config")
 
-		if err := formConnect.Run(); err == nil && connectNow {
-			return connectTarget, true, nil
+	targetUser, targetHost, targetPort := ParseTarget(posTarget)
+	v := hostFormValues{alias: posAlias, hostName: targetHost, user: targetUser, port: "22", auth: authKey}
+	if v.user == "" {
+		v.user = currentUsername()
+	}
+	if targetPort != 0 {
+		v.port = strconv.Itoa(targetPort)
+	}
+	if v.alias == "" {
+		v.alias = targetHost
+	}
+
+	theme := customHuhTheme()
+	if err := runHostForm(wizardAdd, &v, theme); err != nil {
+		return "", false, ignoreAbort(err)
+	}
+
+	identityFile := ""
+	if v.auth == authKey {
+		if identityFile, err = selectOrGenerateKey(homeDir, "", v, theme); err != nil {
+			return "", false, ignoreAbort(err)
 		}
+	}
+	entry := buildEntry(v, identityFile, homeDir, nil)
+
+	configPath := filepath.Join(homeDir, ".ssh", "config")
+	if owner, ok := FindAliasOwner(homeDir, entry.Alias, "", ""); ok {
+		if !confirmOverwrite(entry.Alias, owner, homeDir, theme) {
+			return "", false, nil
+		}
+		configPath = owner
+	}
+
+	content := InsertHost(RemoveHost(readConfig(configPath), entry.Alias), entry.Format())
+	if err := WriteConfigFile(configPath, []byte(content)); err != nil {
+		return "", false, fmt.Errorf("failed writing to %s: %w", configPath, err)
+	}
+	printSavedCard("✔ SAVED", fmt.Sprintf("Successfully written to %s", shortenHome(configPath, homeDir)), entry.Format())
+
+	alias = primaryAlias(entry.Alias)
+	offerCopyID(alias, entry.IdentityFile, homeDir, theme)
+
+	if promptConnect && confirm("Quick Connect",
+		fmt.Sprintf("Connect to '%s' now?", alias),
+		fmt.Sprintf("Starts interactive session: ssh %s", alias),
+		theme) {
+		return alias, true, nil
 	}
 
 	return alias, false, nil
 }
 
-func copyKeyCmd(pubKey string, port int, user, host string) {
-	args := []string{"-i", pubKey}
-	if port > 0 && port != 22 {
-		args = append(args, "-p", strconv.Itoa(port))
+// EditHostWizard runs an interactive Huh wizard to modify an existing SSH host in place.
+func EditHostWizard(alias, homeDir string) (string, error) {
+	hosts, err := LoadAllHosts(homeDir)
+	if err != nil {
+		return "", err
 	}
-	target := fmt.Sprintf("%s@%s", user, host)
-	args = append(args, target)
-
-	badge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#FFAF00")).
-		Padding(0, 1).
-		Render(" SSH-COPY-ID ")
-
-	binary := "ssh-copy-id"
-	if _, err := exec.LookPath("ssh-copy-id"); err != nil {
-		binary = "ssh"
+	target, ok := FindHost(hosts, alias)
+	if !ok {
+		return "", fmt.Errorf("host '%s' not found in SSH configuration", alias)
 	}
 
-	fmt.Printf("\n%s Running: %s %s\n\n", badge, binary, strings.Join(args, " "))
-	cmd := exec.Command(binary, args...) //nolint:gosec // intentional copy-id invocation
-	cmd.Stdin = os.Stdin
+	renderWizardHeader("✏️ SSHX", colorWhite, colorPurple, "Edit SSH Connection: "+target.Alias, "Modify and update host parameters in SSH configuration")
+
+	prev := target.Entry()
+	v := formValuesFromEntry(prev)
+	theme := customHuhTheme()
+	if err := runHostForm(wizardEdit, &v, theme); err != nil {
+		return "", ignoreAbort(err)
+	}
+
+	identityFile := ""
+	if v.auth == authKey {
+		if identityFile, err = selectOrGenerateKey(homeDir, prev.IdentityFile, v, theme); err != nil {
+			return "", ignoreAbort(err)
+		}
+	}
+	next := buildEntry(v, identityFile, homeDir, &prev)
+
+	configPath := target.ConfigFile
+	if configPath == "" {
+		configPath = filepath.Join(homeDir, ".ssh", "config")
+	}
+	content := readConfig(configPath)
+
+	if !strings.EqualFold(next.Alias, prev.Alias) {
+		if owner, ok := FindAliasOwner(homeDir, next.Alias, configPath, prev.Alias); ok {
+			if !confirmOverwrite(next.Alias, owner, homeDir, theme) {
+				return "", nil
+			}
+			if owner == configPath {
+				content = RemoveHost(content, next.Alias)
+			} else if err := DeleteHostFromConfigFile(next.Alias, owner); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	updated, err := UpdateHost(content, prev.Alias, prev, next)
+	if err != nil {
+		return "", err
+	}
+	if err := WriteConfigFile(configPath, []byte(updated)); err != nil {
+		return "", fmt.Errorf("failed writing to %s: %w", configPath, err)
+	}
+
+	newAlias := primaryAlias(next.Alias)
+	printSavedCard("✔ UPDATED", fmt.Sprintf("Successfully updated %s in %s", newAlias, shortenHome(configPath, homeDir)), hostSection(updated, newAlias))
+	offerCopyID(newAlias, next.IdentityFile, homeDir, theme)
+
+	return newAlias, nil
+}
+
+// CloneHostWizard launches an interactive wizard pre-populated with an existing host's configuration
+// to create a duplicate or variant host under a new alias.
+func CloneHostWizard(alias, homeDir string) (string, error) {
+	hosts, err := LoadAllHosts(homeDir)
+	if err != nil {
+		return "", err
+	}
+	source, ok := FindHost(hosts, alias)
+	if !ok {
+		return "", fmt.Errorf("host '%s' not found in SSH configuration", alias)
+	}
+
+	renderWizardHeader("📋 CLONE", colorBlack, colorCyan, "Duplicate Connection: "+source.Alias, "Create a new host entry pre-filled with this configuration")
+
+	prev := source.Entry()
+	v := formValuesFromEntry(prev)
+	v.alias = source.Alias + "-clone"
+	theme := customHuhTheme()
+	if err := runHostForm(wizardClone, &v, theme); err != nil {
+		return "", ignoreAbort(err)
+	}
+
+	identityFile := ""
+	if v.auth == authKey {
+		if identityFile, err = selectOrGenerateKey(homeDir, prev.IdentityFile, v, theme); err != nil {
+			return "", ignoreAbort(err)
+		}
+	}
+	next := buildEntry(v, identityFile, homeDir, &prev)
+
+	configPath := source.ConfigFile
+	if configPath == "" {
+		configPath = filepath.Join(homeDir, ".ssh", "config")
+	}
+	content := readConfig(configPath)
+	block := CloneHost(content, prev, next)
+
+	if owner, ok := FindAliasOwner(homeDir, next.Alias, "", ""); ok {
+		if !confirmOverwrite(next.Alias, owner, homeDir, theme) {
+			return "", nil
+		}
+		if owner == configPath {
+			content = RemoveHost(content, next.Alias)
+		} else if err := DeleteHostFromConfigFile(next.Alias, owner); err != nil {
+			return "", err
+		}
+	}
+
+	if err := WriteConfigFile(configPath, []byte(InsertHost(content, block))); err != nil {
+		return "", fmt.Errorf("failed writing to %s: %w", configPath, err)
+	}
+
+	newAlias := primaryAlias(next.Alias)
+	printSavedCard("✔ CLONED", fmt.Sprintf("Successfully created %s in %s", newAlias, shortenHome(configPath, homeDir)), block)
+	offerCopyID(newAlias, next.IdentityFile, homeDir, theme)
+
+	return newAlias, nil
+}
+
+// DeleteHostPrompt confirms and removes a host, with all of its aliases, from the config file that defines it.
+func DeleteHostPrompt(alias, homeDir string) error {
+	aliases := alias
+	configPath := ""
+	if hosts, err := LoadAllHosts(homeDir); err == nil {
+		if h, ok := FindHost(hosts, alias); ok {
+			aliases = strings.Join(h.AllAliases, " ")
+			configPath = h.ConfigFile
+		}
+	}
+	if configPath == "" {
+		var err error
+		if configPath, err = ResolveHostConfigFile(alias, homeDir); err != nil {
+			return err
+		}
+	}
+	displayPath := shortenHome(configPath, homeDir)
+
+	description := "This action permanently removes the Host configuration entry"
+	if names := strings.Fields(aliases); len(names) > 1 {
+		description = fmt.Sprintf("Removes aliases %s", strings.Join(names, ", "))
+	}
+	description += fmt.Sprintf("\nThe previous file is kept at %s", shortenHome(BackupPath(configPath), homeDir))
+
+	if !confirm("Confirm Host Deletion",
+		fmt.Sprintf("Delete host '%s' from %s?", alias, displayPath),
+		description,
+		customHuhTheme()) {
+		return nil
+	}
+
+	if err := DeleteHostFromConfigFile(aliases, configPath); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n%s Removed '%s' from %s\n\n", badge(" DELETED ", colorWhite, colorCoral), alias, displayPath)
+	return nil
+}
+
+// offerCopyID offers to install the host's public key on the remote server once the host is saved.
+func offerCopyID(alias, identityFile, homeDir string, theme *huh.Theme) {
+	if identityFile == "" {
+		return
+	}
+	pubKey := expandHome(identityFile, homeDir) + ".pub"
+	if _, err := os.Stat(filepath.Clean(pubKey)); err != nil {
+		return
+	}
+	if confirm("Deploy Public Key",
+		fmt.Sprintf("Copy public key to '%s' with ssh-copy-id?", alias),
+		"Uploads public key to remote authorized_keys for passwordless login",
+		theme) {
+		if err := copyPublicKey(pubKey, alias); err != nil {
+			fmt.Fprintf(os.Stderr, "Copying public key failed: %v\n", err)
+		}
+	}
+}
+
+// copyPublicKey installs pubKey in authorized_keys on the host behind alias.
+// Connecting by alias applies the host's User, Port and ProxyJump settings.
+// Without ssh-copy-id (e.g. on Windows) the key is appended over plain ssh.
+func copyPublicKey(pubKey, alias string) error {
+	var cmd *exec.Cmd
+	label := badge(" SSH-COPY-ID ", colorBlack, colorAmber)
+
+	if _, err := exec.LookPath("ssh-copy-id"); err == nil {
+		fmt.Printf("\n%s Running: ssh-copy-id -i %s %s\n\n", label, pubKey, alias)
+		cmd = exec.Command("ssh-copy-id", "-i", pubKey, alias) //nolint:gosec // intentional copy-id invocation
+		cmd.Stdin = os.Stdin
+	} else {
+		key, err := os.ReadFile(filepath.Clean(pubKey)) //nolint:gosec // user public key path
+		if err != nil {
+			return err
+		}
+		fmt.Printf("\n%s ssh-copy-id not found; appending %s to ~/.ssh/authorized_keys on %s\n\n", label, pubKey, alias)
+		cmd = exec.Command("ssh", alias, remoteAppendKey) //nolint:gosec // intentional key installation over ssh
+		cmd.Stdin = bytes.NewReader(key)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	return cmd.Run()
 }
 
-func renderEditWizardHeader(alias string) {
-	badge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#7D56F4")).
-		Padding(0, 1).
-		Render("✏️ SSHX")
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FF5F87")).
-		Render(fmt.Sprintf(" Edit SSH Connection: %s", alias))
-	desc := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#767676")).
-		Render("Modify and update host parameters in SSH configuration")
-
-	fmt.Printf("\n%s%s\n%s\n\n", badge, title, desc)
-}
-
-func selectOrGenerateKey(homeDir, sshDir, initialKey, alias, userName, hostName string, port int, theme *huh.Theme) (string, error) {
+// selectOrGenerateKey asks which private key the host should use, offering
+// discovered keys, a custom path, or a newly generated Ed25519 key.
+func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme *huh.Theme) (string, error) {
+	sshDir := filepath.Join(homeDir, ".ssh")
 	discovered, _ := DiscoverKeys(sshDir)
 	var keyOptions []huh.Option[string]
 
 	selectedKey := ""
 	if initialKey != "" {
-		initialExp := expandHome(initialKey, homeDir)
-		selectedKey = initialExp
-		rel := initialKey
-		if strings.HasPrefix(initialExp, homeDir) {
-			rel = "~" + initialExp[len(homeDir):]
-		}
-		keyOptions = append(keyOptions, huh.NewOption(rel+" (Current)", initialExp))
+		selectedKey = expandHome(initialKey, homeDir)
+		keyOptions = append(keyOptions, huh.NewOption(shortenHome(selectedKey, homeDir)+" (Current)", selectedKey))
 	}
 
 	for _, k := range discovered {
-		if initialKey != "" && k == expandHome(initialKey, homeDir) {
+		if k == selectedKey {
 			continue
 		}
-		rel := k
-		if strings.HasPrefix(k, homeDir) {
-			rel = "~" + k[len(homeDir):]
-		}
-		keyOptions = append(keyOptions, huh.NewOption(rel, k))
+		keyOptions = append(keyOptions, huh.NewOption(shortenHome(k, homeDir), k))
 	}
 	keyOptions = append(keyOptions,
 		huh.NewOption("Custom key path...", "custom"),
@@ -478,7 +723,6 @@ func selectOrGenerateKey(homeDir, sshDir, initialKey, alias, userName, hostName 
 		return "", err
 	}
 
-	var identityFile string
 	switch selectedKey {
 	case "custom":
 		var customPath string
@@ -502,11 +746,10 @@ func selectOrGenerateKey(homeDir, sshDir, initialKey, alias, userName, hostName 
 		if err := formCustom.Run(); err != nil {
 			return "", err
 		}
-		identityFile = expandHome(strings.TrimSpace(customPath), homeDir)
+		return expandHome(strings.TrimSpace(customPath), homeDir), nil
+
 	case "generate":
-		cleanAlias := strings.Fields(alias)[0]
-		defaultPath := filepath.Join(sshDir, "id_ed25519_"+cleanAlias)
-		genPath := "~" + defaultPath[len(homeDir):]
+		genPath := shortenHome(filepath.Join(sshDir, "id_ed25519_"+primaryAlias(v.alias)), homeDir)
 
 		formGen := huh.NewForm(
 			huh.NewGroup(
@@ -521,525 +764,24 @@ func selectOrGenerateKey(homeDir, sshDir, initialKey, alias, userName, hostName 
 			return "", err
 		}
 
-		expandedGenPath := expandHome(strings.TrimSpace(genPath), homeDir)
-		comment := fmt.Sprintf("%s@%s", userName, hostName)
+		keyPath := expandHome(strings.TrimSpace(genPath), homeDir)
+		comment := fmt.Sprintf("%s@%s", strings.TrimSpace(v.user), strings.TrimSpace(v.hostName))
 
-		keygenBadge := lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#00D7D7")).
-			Padding(0, 1).
-			Render(" KEYGEN ")
-
-		fmt.Printf("\n%s Generating Ed25519 key at %s...\n\n", keygenBadge, expandedGenPath)
-		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-C", comment, "-f", expandedGenPath) //nolint:gosec // intentional key generation
+		fmt.Printf("\n%s Generating Ed25519 key at %s...\n\n", badge(" KEYGEN ", colorBlack, colorCyan), keyPath)
+		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-C", comment, "-f", keyPath) //nolint:gosec // intentional key generation
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "ssh-keygen failed: %v\n", err)
+			// ssh-keygen also exits non-zero when the user declines to overwrite an existing key,
+			// in which case that key is still usable.
+			if _, statErr := os.Stat(keyPath); statErr != nil {
+				return "", fmt.Errorf("ssh-keygen failed: %w", err)
+			}
 		}
-		identityFile = expandedGenPath
+		return keyPath, nil
+
 	default:
-		identityFile = selectedKey
+		return selectedKey, nil
 	}
-
-	// Offer ssh-copy-id if public key exists
-	if identityFile != "" {
-		pubKey := identityFile + ".pub"
-		if _, err := os.Stat(filepath.Clean(pubKey)); err == nil { //nolint:gosec // public key existence check
-			var copyKey bool
-			formCopy := huh.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("Copy public key to %s@%s with ssh-copy-id?", userName, hostName)).
-						Description("Uploads public key to remote authorized_keys for passwordless login").
-						Value(&copyKey),
-				).Title("Deploy Public Key"),
-			).WithTheme(theme)
-
-			if err := formCopy.Run(); err == nil && copyKey {
-				copyKeyCmd(pubKey, port, userName, hostName)
-			}
-		}
-	}
-
-	return identityFile, nil
-}
-
-// EditHostWizard runs an interactive Huh wizard to modify an existing SSH host.
-func EditHostWizard(alias, homeDir string) (string, error) {
-	hosts, err := LoadAllHosts(homeDir)
-	if err != nil {
-		return "", err
-	}
-
-	var targetHost *HostItem
-	for _, h := range hosts {
-		if strings.EqualFold(h.Alias, alias) {
-			targetHost = &h
-			break
-		}
-		for _, a := range h.AllAliases {
-			if strings.EqualFold(a, alias) {
-				targetHost = &h
-				break
-			}
-		}
-		if targetHost != nil {
-			break
-		}
-	}
-
-	if targetHost == nil {
-		return "", fmt.Errorf("host '%s' not found in SSH configuration", alias)
-	}
-
-	renderEditWizardHeader(targetHost.Alias)
-
-	configPath := targetHost.ConfigFile
-	if configPath == "" {
-		configPath = filepath.Join(homeDir, ".ssh", "config")
-	}
-
-	hostName := targetHost.HostName
-	userName := targetHost.User
-	port := targetHost.Port
-	if port <= 0 {
-		port = 22
-	}
-	portStr := strconv.Itoa(port)
-	newAlias := targetHost.Alias
-	proxyJump := targetHost.ProxyJump
-
-	authMethod := "default"
-	if !targetHost.PubkeyAuth || targetHost.PasswordAuth {
-		authMethod = "password"
-	} else if targetHost.IdentityFile != "" {
-		authMethod = "key"
-	}
-
-	theme := customHuhTheme()
-	sshDir := filepath.Join(homeDir, ".ssh")
-
-	formHost := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("HostName / IP").
-				Description("FQDN or IP address of the remote host").
-				Placeholder("e.g. 192.168.1.100 or server.example.com").
-				Value(&hostName).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return errors.New("hostname is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("Host Alias").
-				Description("Nickname used with ssh <alias> and sshx").
-				Placeholder("e.g. prod-server").
-				Value(&newAlias).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return errors.New("host alias is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("User").
-				Description("Remote login username").
-				Value(&userName),
-			huh.NewInput().
-				Title("Port").
-				Description("SSH port (standard is 22)").
-				Value(&portStr).
-				Validate(func(s string) error {
-					p, err := strconv.Atoi(strings.TrimSpace(s))
-					if err != nil || p <= 0 || p > 65535 {
-						return errors.New("port must be between 1 and 65535")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("ProxyJump").
-				Description("Optional jump host or bastion (e.g. bastion.lan)").
-				Placeholder("leave blank for direct connection").
-				Value(&proxyJump),
-		).Title("Step 1: Edit Host Details").Description("Update target connection parameters"),
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Authentication Method").
-				Description("Choose how you connect to this server").
-				Options(
-					huh.NewOption("SSH Key (IdentityFile) [Recommended]", "key"),
-					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", "password"),
-					huh.NewOption("Standard / Default (agent keys with password fallback)", "default"),
-				).
-				Value(&authMethod),
-		).Title("Step 2: Authentication").Description("Select authentication strategy"),
-	).WithTheme(theme)
-
-	if err := formHost.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return "", nil
-		}
-		return "", err
-	}
-
-	if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p > 0 {
-		port = p
-	}
-
-	var identityFile string
-	if authMethod == "key" {
-		keyPath, err := selectOrGenerateKey(homeDir, sshDir, targetHost.IdentityFile, newAlias, userName, hostName, port, theme)
-		if err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
-				return "", nil
-			}
-			return "", err
-		}
-		identityFile = keyPath
-	}
-
-	pubkeyAuth := true
-	passwordAuth := false
-	switch authMethod {
-	case "password":
-		pubkeyAuth = false
-		passwordAuth = true
-		identityFile = ""
-	case "default":
-		pubkeyAuth = true
-		passwordAuth = false
-		identityFile = ""
-	case "key":
-		pubkeyAuth = true
-		passwordAuth = false
-	}
-
-	formattedKey := identityFile
-	if strings.HasPrefix(identityFile, homeDir) {
-		formattedKey = "~" + identityFile[len(homeDir):]
-	}
-
-	entry := HostEntry{
-		Alias:          newAlias,
-		HostName:       hostName,
-		User:           userName,
-		Port:           port,
-		IdentityFile:   formattedKey,
-		IdentitiesOnly: formattedKey != "",
-		PubkeyAuth:     pubkeyAuth,
-		PasswordAuth:   passwordAuth,
-		ProxyJump:      strings.TrimSpace(proxyJump),
-	}
-
-	var existingContent string
-	if data, err := os.ReadFile(filepath.Clean(configPath)); err == nil { //nolint:gosec // user SSH config path
-		existingContent = string(data)
-	}
-
-	// Remove previous entry
-	cleaned := RemoveHost(existingContent, targetHost.Alias)
-	if newAlias != targetHost.Alias && HasHost(cleaned, newAlias) {
-		var overwrite bool
-		formOverwrite := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title(fmt.Sprintf("Host alias '%s' already exists in SSH configuration. Overwrite?", newAlias)).
-					Description("Existing configuration for this alias will be replaced").
-					Value(&overwrite),
-			).Title("Host Conflict Warning"),
-		).WithTheme(theme)
-
-		if err := formOverwrite.Run(); err != nil || !overwrite {
-			return "", nil
-		}
-		cleaned = RemoveHost(cleaned, newAlias)
-	}
-
-	formattedBlock := entry.Format()
-	newContent := InsertHost(cleaned, formattedBlock)
-
-	if err := AtomicWrite(configPath, []byte(newContent), 0600); err != nil {
-		return "", fmt.Errorf("failed writing to %s: %w", configPath, err)
-	}
-
-	displayPath := configPath
-	if strings.HasPrefix(configPath, homeDir) {
-		displayPath = "~" + configPath[len(homeDir):]
-	}
-
-	successBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#5FD787")).
-		Padding(0, 1).
-		Render(" ✔ UPDATED ")
-
-	successTitle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#5FD787")).
-		Render(fmt.Sprintf(" Successfully updated %s in %s", newAlias, displayPath))
-
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7D56F4")).
-		Padding(0, 2).
-		MarginTop(1).
-		MarginBottom(1).
-		Render(highlightConfigBlock(formattedBlock))
-
-	fmt.Println()
-	fmt.Printf("%s%s\n", successBadge, successTitle)
-	fmt.Println(card)
-
-	return newAlias, nil
-}
-
-// CloneHostWizard launches an interactive wizard pre-populated with an existing host's configuration
-// to create a duplicate or variant host under a new alias.
-func CloneHostWizard(alias, homeDir string) (string, error) {
-	hosts, err := LoadAllHosts(homeDir)
-	if err != nil {
-		return "", err
-	}
-
-	var targetHost *HostItem
-	for _, h := range hosts {
-		if strings.EqualFold(h.Alias, alias) {
-			targetHost = &h
-			break
-		}
-		for _, a := range h.AllAliases {
-			if strings.EqualFold(a, alias) {
-				targetHost = &h
-				break
-			}
-		}
-		if targetHost != nil {
-			break
-		}
-	}
-
-	if targetHost == nil {
-		return "", fmt.Errorf("host '%s' not found in SSH configuration", alias)
-	}
-
-	badge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#00D7D7")).
-		Padding(0, 1).
-		Render("📋 CLONE")
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FF5F87")).
-		Render(fmt.Sprintf(" Duplicate Connection: %s", targetHost.Alias))
-	desc := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#767676")).
-		Render("Create a new host entry pre-filled with this configuration")
-
-	fmt.Printf("\n%s%s\n%s\n\n", badge, title, desc)
-
-	configPath := targetHost.ConfigFile
-	if configPath == "" {
-		configPath = filepath.Join(homeDir, ".ssh", "config")
-	}
-
-	hostName := targetHost.HostName
-	userName := targetHost.User
-	port := targetHost.Port
-	if port <= 0 {
-		port = 22
-	}
-	portStr := strconv.Itoa(port)
-	newAlias := targetHost.Alias + "-clone"
-	proxyJump := targetHost.ProxyJump
-
-	authMethod := "default"
-	if !targetHost.PubkeyAuth || targetHost.PasswordAuth {
-		authMethod = "password"
-	} else if targetHost.IdentityFile != "" {
-		authMethod = "key"
-	}
-
-	theme := customHuhTheme()
-	sshDir := filepath.Join(homeDir, ".ssh")
-
-	formHost := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("New Host Alias").
-				Description("Unique nickname for this duplicated host").
-				Placeholder("e.g. prod-server-backup").
-				Value(&newAlias).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return errors.New("host alias is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("HostName / IP").
-				Description("FQDN or IP address of the target server").
-				Placeholder("e.g. 192.168.1.101").
-				Value(&hostName).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return errors.New("hostname is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("User").
-				Description("Remote login username").
-				Value(&userName),
-			huh.NewInput().
-				Title("Port").
-				Description("SSH port (standard is 22)").
-				Value(&portStr).
-				Validate(func(s string) error {
-					p, err := strconv.Atoi(strings.TrimSpace(s))
-					if err != nil || p <= 0 || p > 65535 {
-						return errors.New("port must be between 1 and 65535")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("ProxyJump").
-				Description("Optional jump host or bastion").
-				Placeholder("leave blank for direct connection").
-				Value(&proxyJump),
-		).Title("Step 1: Duplicate Host Parameters").Description("Customize details for the cloned host"),
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Authentication Method").
-				Description("Choose how you connect to this server").
-				Options(
-					huh.NewOption("SSH Key (IdentityFile) [Recommended]", "key"),
-					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", "password"),
-					huh.NewOption("Standard / Default (agent keys with password fallback)", "default"),
-				).
-				Value(&authMethod),
-		).Title("Step 2: Authentication").Description("Select authentication strategy"),
-	).WithTheme(theme)
-
-	if err := formHost.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return "", nil
-		}
-		return "", err
-	}
-
-	if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p > 0 {
-		port = p
-	}
-
-	var identityFile string
-	if authMethod == "key" {
-		keyPath, err := selectOrGenerateKey(homeDir, sshDir, targetHost.IdentityFile, newAlias, userName, hostName, port, theme)
-		if err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
-				return "", nil
-			}
-			return "", err
-		}
-		identityFile = keyPath
-	}
-
-	pubkeyAuth := true
-	passwordAuth := false
-	switch authMethod {
-	case "password":
-		pubkeyAuth = false
-		passwordAuth = true
-		identityFile = ""
-	case "default":
-		pubkeyAuth = true
-		passwordAuth = false
-		identityFile = ""
-	case "key":
-		pubkeyAuth = true
-		passwordAuth = false
-	}
-
-	formattedKey := identityFile
-	if strings.HasPrefix(identityFile, homeDir) {
-		formattedKey = "~" + identityFile[len(homeDir):]
-	}
-
-	entry := HostEntry{
-		Alias:          newAlias,
-		HostName:       hostName,
-		User:           userName,
-		Port:           port,
-		IdentityFile:   formattedKey,
-		IdentitiesOnly: formattedKey != "",
-		PubkeyAuth:     pubkeyAuth,
-		PasswordAuth:   passwordAuth,
-		ProxyJump:      strings.TrimSpace(proxyJump),
-	}
-
-	var existingContent string
-	if data, err := os.ReadFile(filepath.Clean(configPath)); err == nil { //nolint:gosec // user SSH config path
-		existingContent = string(data)
-	}
-
-	if HasHost(existingContent, newAlias) {
-		var overwrite bool
-		formOverwrite := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title(fmt.Sprintf("Host alias '%s' already exists. Overwrite?", newAlias)).
-					Description("Existing configuration for this alias will be replaced").
-					Value(&overwrite),
-			).Title("Host Conflict Warning"),
-		).WithTheme(theme)
-
-		if err := formOverwrite.Run(); err != nil || !overwrite {
-			return "", nil
-		}
-		existingContent = RemoveHost(existingContent, newAlias)
-	}
-
-	formattedBlock := entry.Format()
-	newContent := InsertHost(existingContent, formattedBlock)
-
-	if err := AtomicWrite(configPath, []byte(newContent), 0600); err != nil {
-		return "", fmt.Errorf("failed writing to %s: %w", configPath, err)
-	}
-
-	displayPath := configPath
-	if strings.HasPrefix(configPath, homeDir) {
-		displayPath = "~" + configPath[len(homeDir):]
-	}
-
-	successBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#5FD787")).
-		Padding(0, 1).
-		Render(" ✔ CLONED ")
-
-	successTitle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#5FD787")).
-		Render(fmt.Sprintf(" Successfully created %s in %s", newAlias, displayPath))
-
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7D56F4")).
-		Padding(0, 2).
-		MarginTop(1).
-		MarginBottom(1).
-		Render(highlightConfigBlock(formattedBlock))
-
-	fmt.Println()
-	fmt.Printf("%s%s\n", successBadge, successTitle)
-	fmt.Println(card)
-
-	return newAlias, nil
 }

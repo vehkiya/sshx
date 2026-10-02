@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -21,64 +20,64 @@ var (
 	// Brand and header styles
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#7D56F4")). // Charm Purple
+			Foreground(colorWhite).
+			Background(colorPurple). // Charm Purple
 			Padding(0, 1)
 
 	// Panes
 	rightPaneStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(colorPurple).
 			Padding(1, 2)
 
 	detailBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(colorPurple).
 			Padding(0, 1).
 			MarginTop(1)
 
 	// Inspector elements
 	inspectorTitle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FF5F87")). // Coral Pink
+			Foreground(colorCoral). // Coral Pink
 			MarginBottom(1)
 
 	cardLabel = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#00D7D7")). // Vibrant Cyan
+			Foreground(colorCyan). // Vibrant Cyan
 			Width(13)
 
 	cardValue = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EEEEEE"))
+			Foreground(colorLightGray)
 
 	cmdPreviewStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#5FD787")). // Soft Green
-			Background(lipgloss.Color("#262626")).
+			Foreground(colorGreen). // Soft Green
+			Background(colorDarkGray).
 			Padding(0, 1).
 			MarginTop(1).
 			MarginBottom(1)
 
 	// Badges
 	keyBadge = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#5FD787")).
+			Foreground(colorBlack).
+			Background(colorGreen).
 			Bold(true).
 			Padding(0, 1)
 
 	passwordBadge = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#FFAF00")).
+			Foreground(colorBlack).
+			Background(colorAmber).
 			Bold(true).
 			Padding(0, 1)
 
 	defaultBadge = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#5F87AF")).
+			Foreground(colorWhite).
+			Background(colorSlate).
 			Bold(true).
 			Padding(0, 1)
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#767676"))
+			Foreground(colorDim)
 )
 
 type customDelegate struct {
@@ -88,12 +87,12 @@ type customDelegate struct {
 func newCustomDelegate() customDelegate {
 	d := list.NewDefaultDelegate()
 	d.Styles.SelectedTitle = d.Styles.SelectedTitle.
-		Foreground(lipgloss.Color("#FF5F87")).
-		BorderLeftForeground(lipgloss.Color("#7D56F4")).
+		Foreground(colorCoral).
+		BorderLeftForeground(colorPurple).
 		Bold(true)
 	d.Styles.SelectedDesc = d.Styles.SelectedDesc.
-		Foreground(lipgloss.Color("#FFFFFF")).
-		BorderLeftForeground(lipgloss.Color("#7D56F4"))
+		Foreground(colorWhite).
+		BorderLeftForeground(colorPurple)
 	return customDelegate{DefaultDelegate: d}
 }
 
@@ -439,22 +438,22 @@ func (m model) View() string {
 
 	// 1. Empty state
 	if len(m.list.Items()) == 0 {
-		cardContent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("📡 No SSH Hosts Found\n\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE")).Render("No configured hosts found in ~/.ssh/config.\n\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add your first host\n") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n")
+		cardContent := lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("📡 No SSH Hosts Found\n\n") +
+			lipgloss.NewStyle().Foreground(colorLightGray).Render("No configured hosts found in ~/.ssh/config.\n\n") +
+			lipgloss.NewStyle().Foreground(colorCyan).Render("[a] Add your first host\n") +
+			lipgloss.NewStyle().Foreground(colorAmber).Render("[E] Open ~/.ssh/config in $EDITOR\n")
 		if m.updateAvailable != "" {
-			cardContent += lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render(fmt.Sprintf("[U] Upgrade sshx to %s\n", m.updateAvailable))
+			cardContent += lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(fmt.Sprintf("[U] Upgrade sshx to %s\n", m.updateAvailable))
 		}
-		cardContent += lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit")
+		cardContent += lipgloss.NewStyle().Foreground(colorDim).Render("[q] Quit")
 
 		if m.statusMessage != "" {
-			cardContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")).Bold(true).Render(m.statusMessage+"\n\n") + cardContent
+			cardContent = lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render(m.statusMessage+"\n\n") + cardContent
 		}
 
 		emptyCard := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(colorPurple).
 			Padding(2, 4).
 			Align(lipgloss.Center).
 			Render(cardContent)
@@ -478,8 +477,8 @@ func (m model) View() string {
 		}
 		delPrompt := lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#FF4672")).
+			Foreground(colorWhite).
+			Background(colorRed).
 			Padding(0, 2).
 			Render(fmt.Sprintf("⚠️  Delete host block for '%s' from %s? [y/N]", selected.Alias, displayFile))
 
@@ -516,13 +515,13 @@ func (m model) View() string {
 		if maxH < 5 {
 			maxH = 5
 		}
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("⇥ Press [Tab] to return to Host List\n\n")
+		header := lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("⇥ Press [Tab] to return to Host List\n\n")
 		return detailBoxStyle.Width(m.width - 4).MaxHeight(maxH).Render(header + inspectorContent)
 	}
 
 	if m.statusMessage != "" {
 		toast := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#5FD787")).
+			Foreground(colorGreen).
 			Bold(true).
 			Render("  " + m.statusMessage)
 		return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), toast)
@@ -542,8 +541,8 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 	if updateAvailable != "" {
 		updateBadge := lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#00D7D7")).
+			Foreground(colorBlack).
+			Background(colorCyan).
 			Padding(0, 1).
 			Render(fmt.Sprintf("↑ UPDATE %s AVAILABLE", updateAvailable))
 		sb.WriteString(updateBadge + " " + dimStyle.Render("Press [U] to upgrade sshx") + "\n\n")
@@ -569,7 +568,7 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 		}
 		sb.WriteString(highlightConfigBlock(rawText))
 		sb.WriteString("\n\n" + dimStyle.Render("── Quick Actions ────────────────────────\n"))
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[v] Formatted View"))
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[v] Formatted View"))
 		return sb.String()
 	}
 
@@ -577,13 +576,13 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 	cmdStr := fmt.Sprintf("ssh %s", h.Alias)
 	sb.WriteString(cmdPreviewStyle.Render(cmdStr))
 	if statusMsg != "" {
-		sb.WriteString("  " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render(statusMsg))
+		sb.WriteString("  " + lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(statusMsg))
 	}
 	sb.WriteString("\n\n")
 
 	// Notes/Comments if present
 	if h.Notes != "" {
-		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Notes:"), lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FFAF00")).Render(h.Notes))
+		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Notes:"), lipgloss.NewStyle().Italic(true).Foreground(colorAmber).Render(h.Notes))
 	}
 
 	// Target line
@@ -646,18 +645,18 @@ func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg, updateAvai
 
 	sb.WriteString("\n" + dimStyle.Render("── Quick Actions ────────────────────────"))
 	fmt.Fprintf(&sb, "\n%s  %s  %s  %s  %s  %s  %s  %s  %s",
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[Enter] Connect"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("[e] Edit"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[D] Clone"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Render("[c] Key"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[y] Yank"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[p] Ping"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("[v] Raw"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8A8A8A")).Render("[E] Config"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[Enter] Connect"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[a] Add"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorPurple).Render("[e] Edit"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[D] Clone"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorAmber).Render("[c] Key"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[y] Yank"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[p] Ping"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("[v] Raw"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorGray).Render("[E] Config"),
 	)
 	if updateAvailable != "" {
-		fmt.Fprintf(&sb, "  %s", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[U] Upgrade"))
+		fmt.Fprintf(&sb, "  %s", lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("[U] Upgrade"))
 	}
 
 	return sb.String()
@@ -725,44 +724,4 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 	}
 
 	return fm.choice, fm.action, nil
-}
-
-// DeleteHostPrompt prompts for confirmation and strips a host from its SSH config file.
-func DeleteHostPrompt(alias, homeDir string, targetConfigFile ...string) error {
-	configPath, err := ResolveHostConfigFile(alias, homeDir, targetConfigFile...)
-	if err != nil {
-		return err
-	}
-
-	displayPath := configPath
-	if homeDir != "" && strings.HasPrefix(configPath, homeDir) {
-		displayPath = "~" + configPath[len(homeDir):]
-	}
-
-	var confirm bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(fmt.Sprintf("Delete host block for '%s' from %s?", alias, displayPath)).
-				Description("This action permanently removes the Host configuration entry").
-				Value(&confirm),
-		).Title("Confirm Host Deletion"),
-	).WithTheme(customHuhTheme())
-
-	if err := form.Run(); err != nil || !confirm {
-		return nil
-	}
-
-	if err := DeleteHostFromConfigFile(alias, configPath); err != nil {
-		return err
-	}
-
-	delBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#FF5F87")).
-		Padding(0, 1).
-		Render(" DELETED ")
-	fmt.Printf("\n%s Removed '%s' from %s\n\n", delBadge, alias, displayPath)
-	return nil
 }
