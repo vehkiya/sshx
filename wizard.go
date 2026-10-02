@@ -384,16 +384,6 @@ func AddHostWizard(posTarget, posAlias, homeDir string, promptConnect bool) (ali
 	return alias, false, nil
 }
 
-func expandHome(path, homeDir string) string {
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(homeDir, path[2:])
-	}
-	if path == "~" {
-		return homeDir
-	}
-	return path
-}
-
 func copyKeyCmd(pubKey string, port int, user, host string) {
 	args := []string{"-i", pubKey}
 	if port > 0 && port != 22 {
