@@ -159,16 +159,17 @@ func parseSemVerParts(v string) [3]int {
 }
 
 // PerformUpdate downloads the matching release asset, verifies its checksum, and replaces the current binary.
-func PerformUpdate(currentVersion string, stdout io.Writer, force bool) error {
+// Returns (true, nil) if binary was updated, (false, nil) if already up to date, or an error.
+func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, error) {
 	_, _ = fmt.Fprintf(stdout, "Checking for latest release from https://github.com/%s/%s...\n", repoOwner, repoName)
 	rel, isNewer, err := CheckLatestRelease(currentVersion)
 	if err != nil {
-		return fmt.Errorf("failed checking for updates: %w", err)
+		return false, fmt.Errorf("failed checking for updates: %w", err)
 	}
 
 	if !isNewer && !force {
 		_, _ = fmt.Fprintf(stdout, "sshx is already up to date (%s)\n", currentVersion)
-		return nil
+		return false, nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Latest release is %s (current: %s)\n", rel.TagName, currentVersion)
@@ -196,20 +197,20 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) error {
 	}
 
 	if assetURL == "" {
-		return fmt.Errorf("no release asset found matching platform %s/%s for %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
+		return false, fmt.Errorf("no release asset found matching platform %s/%s for %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Downloading %s...\n", assetName)
 	archiveData, err := downloadURL(assetURL)
 	if err != nil {
-		return fmt.Errorf("failed downloading release archive: %w", err)
+		return false, fmt.Errorf("failed downloading release archive: %w", err)
 	}
 
 	if checksumURL != "" {
 		_, _ = fmt.Fprintf(stdout, "Verifying sha256 checksum...\n")
 		if sumData, err := downloadURL(checksumURL); err == nil {
 			if err := verifyChecksum(archiveData, assetName, string(sumData)); err != nil {
-				return fmt.Errorf("checksum verification failed: %w", err)
+				return false, fmt.Errorf("checksum verification failed: %w", err)
 			}
 			_, _ = fmt.Fprintf(stdout, "✔ Checksum verified\n")
 		}
@@ -223,12 +224,24 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) error {
 		binaryBytes, err = extractBinaryFromTarGz(archiveData, binName)
 	}
 	if err != nil {
-		return fmt.Errorf("failed extracting binary: %w", err)
+		return false, fmt.Errorf("failed extracting binary: %w", err)
 	}
 
 	path, err := ReplaceCurrentExecutable(binaryBytes)
 	if err != nil {
-		return err
+		return false, err
+	}
+
+	// Update local cache so next startup has fresh information
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		cachePath := filepath.Join(homeDir, ".ssh", updateCacheFile)
+		c := updateCache{
+			CheckedAt:     time.Now().Unix(),
+			LatestVersion: rel.TagName,
+		}
+		if cData, err := json.Marshal(c); err == nil {
+			_ = AtomicWrite(cachePath, cData, 0600)
+		}
 	}
 
 	badge := lipgloss.NewStyle().
@@ -237,8 +250,12 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) error {
 		Background(lipgloss.Color("#5FD787")).
 		Padding(0, 1).
 		Render(" UPDATED ")
+	infoStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00D7D7")).
+		Bold(true)
 	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", badge, rel.TagName, path)
-	return nil
+	_, _ = fmt.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
+	return true, nil
 }
 
 func downloadURL(url string) ([]byte, error) {
