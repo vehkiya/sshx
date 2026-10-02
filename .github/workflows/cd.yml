@@ -114,8 +114,10 @@ jobs:
             cd dist
             if [ "$OS" = "windows" ]; then
               zip -r "sshx_${VERSION}_${OS}_${ARCH}.zip" "sshx_${VERSION}_${OS}_${ARCH}"
+              cp "sshx_${VERSION}_${OS}_${ARCH}.zip" "sshx_${OS}_${ARCH}.zip"
             else
               tar -czf "sshx_${VERSION}_${OS}_${ARCH}.tar.gz" "sshx_${VERSION}_${OS}_${ARCH}"
+              cp "sshx_${VERSION}_${OS}_${ARCH}.tar.gz" "sshx_${OS}_${ARCH}.tar.gz"
             fi
             rm -rf "sshx_${VERSION}_${OS}_${ARCH}"
             cd ..
