@@ -1,9 +1,14 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -92,13 +97,72 @@ func newCustomDelegate() customDelegate {
 	return customDelegate{DefaultDelegate: d}
 }
 
+// copyToClipboard copies text to the system clipboard via OSC 52 and CLI tools.
+func copyToClipboard(text string) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(text))
+	_, _ = fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", encoded)
+
+	if _, err := exec.LookPath("wl-copy"); err == nil {
+		cmd := exec.Command("wl-copy")
+		cmd.Stdin = strings.NewReader(text)
+		_ = cmd.Run()
+	} else if _, err := exec.LookPath("xclip"); err == nil {
+		cmd := exec.Command("xclip", "-selection", "clipboard")
+		cmd.Stdin = strings.NewReader(text)
+		_ = cmd.Run()
+	} else if _, err := exec.LookPath("pbcopy"); err == nil {
+		cmd := exec.Command("pbcopy")
+		cmd.Stdin = strings.NewReader(text)
+		_ = cmd.Run()
+	}
+}
+
+type pingResultMsg struct {
+	alias   string
+	latency time.Duration
+	err     error
+}
+
+func checkReachabilityCmd(alias, hostName string, port int) tea.Cmd {
+	return func() tea.Msg {
+		targetHost := hostName
+		if targetHost == "" {
+			targetHost = alias
+		}
+		targetPort := port
+		if targetPort <= 0 {
+			targetPort = 22
+		}
+		target := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+		start := time.Now()
+		conn, err := net.DialTimeout("tcp", target, 1500*time.Millisecond)
+		if err != nil {
+			return pingResultMsg{alias: alias, err: err}
+		}
+		_ = conn.Close()
+		return pingResultMsg{alias: alias, latency: time.Since(start)}
+	}
+}
+
+type clearStatusMsg struct{}
+
+func clearStatusCmd() tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return clearStatusMsg{}
+	})
+}
+
 type listKeyMap struct {
 	connect    key.Binding
 	add        key.Binding
 	edit       key.Binding
+	clone      key.Binding
 	openEditor key.Binding
 	delete     key.Binding
 	copyID     key.Binding
+	yank       key.Binding
+	ping       key.Binding
+	viewRaw    key.Binding
 	toggleTab  key.Binding
 }
 
@@ -116,6 +180,10 @@ func newListKeyMap() *listKeyMap {
 			key.WithKeys("e"),
 			key.WithHelp("e", "edit"),
 		),
+		clone: key.NewBinding(
+			key.WithKeys("D"),
+			key.WithHelp("D", "clone"),
+		),
 		openEditor: key.NewBinding(
 			key.WithKeys("E"),
 			key.WithHelp("E", "$EDITOR"),
@@ -126,7 +194,19 @@ func newListKeyMap() *listKeyMap {
 		),
 		copyID: key.NewBinding(
 			key.WithKeys("c"),
-			key.WithHelp("c", "copy key"),
+			key.WithHelp("c", "key"),
+		),
+		yank: key.NewBinding(
+			key.WithKeys("y"),
+			key.WithHelp("y", "yank"),
+		),
+		ping: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "ping"),
+		),
+		viewRaw: key.NewBinding(
+			key.WithKeys("v"),
+			key.WithHelp("v", "raw"),
 		),
 		toggleTab: key.NewBinding(
 			key.WithKeys("tab"),
@@ -136,14 +216,19 @@ func newListKeyMap() *listKeyMap {
 }
 
 type model struct {
-	list        list.Model
-	keys        *listKeyMap
-	choice      string
-	action      string
-	width       int
-	height      int
-	quitting    bool
-	showDetails bool
+	list          list.Model
+	keys          *listKeyMap
+	choice        string
+	action        string
+	width         int
+	height        int
+	quitting      bool
+	showDetails   bool
+	showRaw       bool
+	confirmDelete bool
+	statusMessage string
+	pingStatus    map[string]string
+	homeDir       string
 }
 
 func (m model) Init() tea.Cmd {
@@ -164,7 +249,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case pingResultMsg:
+		if m.pingStatus == nil {
+			m.pingStatus = make(map[string]string)
+		}
+		if msg.err != nil {
+			m.pingStatus[msg.alias] = "🔴 Unreachable"
+		} else {
+			m.pingStatus[msg.alias] = fmt.Sprintf("🟢 Reachable (%dms)", msg.latency.Milliseconds())
+		}
+		return m, nil
+
+	case clearStatusMsg:
+		m.statusMessage = ""
+		return m, nil
+
 	case tea.KeyMsg:
+		if m.confirmDelete {
+			switch msg.String() {
+			case "y", "Y":
+				if selected, ok := m.list.SelectedItem().(HostItem); ok {
+					configPath, err := ResolveHostConfigFile(selected.Alias, m.homeDir)
+					if err == nil {
+						_ = DeleteHostFromConfigFile(selected.Alias, configPath)
+					}
+					m.list.RemoveItem(m.list.Index())
+					m.statusMessage = fmt.Sprintf("✔ Deleted '%s'", selected.Alias)
+				}
+				m.confirmDelete = false
+				return m, clearStatusCmd()
+			case "n", "N", "esc", "q":
+				m.confirmDelete = false
+				m.statusMessage = "Deletion cancelled"
+				return m, clearStatusCmd()
+			default:
+				return m, nil
+			}
+		}
+
 		if m.list.FilterState() == list.Filtering {
 			break
 		}
@@ -194,15 +316,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 
+		case key.Matches(msg, m.keys.clone):
+			if selected, ok := m.list.SelectedItem().(HostItem); ok {
+				m.choice = selected.Alias
+				m.action = "clone-host"
+				return m, tea.Quit
+			}
+
 		case key.Matches(msg, m.keys.openEditor):
 			m.action = "edit-config"
 			return m, tea.Quit
 
 		case key.Matches(msg, m.keys.delete):
-			if selected, ok := m.list.SelectedItem().(HostItem); ok {
-				m.choice = selected.Alias
-				m.action = "delete"
-				return m, tea.Quit
+			if len(m.list.Items()) > 0 {
+				m.confirmDelete = true
+				return m, nil
 			}
 
 		case key.Matches(msg, m.keys.copyID):
@@ -211,6 +339,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.action = "copy-id"
 				return m, tea.Quit
 			}
+
+		case key.Matches(msg, m.keys.yank):
+			if selected, ok := m.list.SelectedItem().(HostItem); ok {
+				cmdStr := fmt.Sprintf("ssh %s", selected.Alias)
+				copyToClipboard(cmdStr)
+				m.statusMessage = fmt.Sprintf("✔ Copied '%s' to clipboard", cmdStr)
+				return m, clearStatusCmd()
+			}
+
+		case key.Matches(msg, m.keys.ping):
+			if selected, ok := m.list.SelectedItem().(HostItem); ok {
+				if m.pingStatus == nil {
+					m.pingStatus = make(map[string]string)
+				}
+				m.pingStatus[selected.Alias] = "⏳ Probing..."
+				return m, checkReachabilityCmd(selected.Alias, selected.HostName, selected.Port)
+			}
+
+		case key.Matches(msg, m.keys.viewRaw):
+			m.showRaw = !m.showRaw
+			return m, nil
 
 		case msg.String() == "q" || msg.String() == "ctrl+c" || (msg.String() == "esc" && m.list.FilterState() == list.Unfiltered):
 			m.quitting = true
@@ -229,12 +378,45 @@ func (m model) View() string {
 		return ""
 	}
 
+	// 1. Empty state
+	if len(m.list.Items()) == 0 {
+		emptyCard := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(2, 4).
+			Align(lipgloss.Center).
+			Render(
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("📡 No SSH Hosts Found\n\n") +
+					lipgloss.NewStyle().Foreground(lipgloss.Color("#EEEEEE")).Render("No configured hosts found in ~/.ssh/config.\n\n") +
+					lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add your first host\n") +
+					lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Render("[E] Open ~/.ssh/config in $EDITOR\n") +
+					lipgloss.NewStyle().Foreground(lipgloss.Color("#767676")).Render("[q] Quit"),
+			)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, emptyCard)
+	}
+
 	selected, hasSelection := m.list.SelectedItem().(HostItem)
 	if !hasSelection {
 		return m.list.View()
 	}
 
-	inspectorContent := renderInspector(selected)
+	// Confirmation banner if deleting
+	if m.confirmDelete {
+		displayFile := selected.ConfigFile
+		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(displayFile, home) {
+			displayFile = "~" + displayFile[len(home):]
+		}
+		delPrompt := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#FF4672")).
+			Padding(0, 2).
+			Render(fmt.Sprintf("⚠️  Delete host block for '%s' from %s? [y/N]", selected.Alias, displayFile))
+
+		return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), "\n"+delPrompt)
+	}
+
+	inspectorContent := renderInspector(selected, m.showRaw, m.pingStatus[selected.Alias], m.statusMessage)
 
 	// Responsive layout: Side-by-side when terminal width >= 100 columns
 	if m.width >= 100 {
@@ -259,20 +441,46 @@ func (m model) View() string {
 		return detailBoxStyle.Width(m.width - 4).MaxHeight(m.height - 3).Render(header + inspectorContent)
 	}
 
+	if m.statusMessage != "" {
+		toast := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5FD787")).
+			Bold(true).
+			Render("  " + m.statusMessage)
+		return lipgloss.JoinVertical(lipgloss.Left, m.list.View(), toast)
+	}
+
 	return m.list.View()
 }
 
-func renderInspector(h HostItem) string {
+func renderInspector(h HostItem, showRaw bool, pingStatus, statusMsg string) string {
 	var sb strings.Builder
 
 	// Title
 	sb.WriteString(inspectorTitle.Render(fmt.Sprintf("📡 Host: %s", h.Alias)))
 	sb.WriteString("\n")
 
+	// If Raw mode is toggled, show the syntax-highlighted raw OpenSSH configuration block!
+	if showRaw {
+		sb.WriteString(dimStyle.Render("── Raw OpenSSH Configuration ───────────\n"))
+		rawText := strings.Join(h.RawLines, "\n")
+		sb.WriteString(highlightConfigBlock(rawText))
+		sb.WriteString("\n\n" + dimStyle.Render("── Quick Actions ────────────────────────\n"))
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[v] Formatted View"))
+		return sb.String()
+	}
+
 	// Command preview
 	cmdStr := fmt.Sprintf("ssh %s", h.Alias)
 	sb.WriteString(cmdPreviewStyle.Render(cmdStr))
+	if statusMsg != "" {
+		sb.WriteString("  " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render(statusMsg))
+	}
 	sb.WriteString("\n\n")
+
+	// Notes/Comments if present
+	if h.Notes != "" {
+		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Notes:"), lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FFAF00")).Render(h.Notes))
+	}
 
 	// Target line
 	targetStr := h.HostName
@@ -290,6 +498,13 @@ func renderInspector(h HostItem) string {
 		fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("User:"), cardValue.Render(h.User))
 	}
 	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Port:"), cardValue.Render(fmt.Sprintf("%d", h.Port)))
+
+	// Reachability / Ping
+	pingDisplay := "[p] Probe TCP"
+	if pingStatus != "" {
+		pingDisplay = pingStatus
+	}
+	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Reachability:"), cardValue.Render(pingDisplay))
 
 	// Auth Badge & Details
 	var badge string
@@ -326,12 +541,15 @@ func renderInspector(h HostItem) string {
 	fmt.Fprintf(&sb, "%s %s\n", cardLabel.Render("Config File:"), dimStyle.Render(relFile))
 
 	sb.WriteString("\n" + dimStyle.Render("── Quick Actions ────────────────────────"))
-	fmt.Fprintf(&sb, "\n%s  %s  %s  %s  %s  %s",
+	fmt.Fprintf(&sb, "\n%s  %s  %s  %s  %s  %s  %s  %s  %s",
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[Enter] Connect"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[a] Add"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("[e] Edit"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Render("[c] Copy Key"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("[d] Delete"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[D] Clone"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Render("[c] Key"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD787")).Render("[y] Yank"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7D7")).Render("[p] Ping"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5F87")).Render("[v] Raw"),
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8A8A8A")).Render("[E] Config"),
 	)
 
@@ -366,10 +584,10 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 
 	keys := newListKeyMap()
 	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.connect, keys.add, keys.edit, keys.delete, keys.copyID, keys.openEditor}
+		return []key.Binding{keys.connect, keys.add, keys.edit, keys.clone, keys.yank, keys.ping}
 	}
 	l.AdditionalFullHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.connect, keys.add, keys.edit, keys.delete, keys.copyID, keys.openEditor, keys.toggleTab}
+		return []key.Binding{keys.connect, keys.add, keys.edit, keys.clone, keys.delete, keys.copyID, keys.yank, keys.ping, keys.viewRaw, keys.openEditor, keys.toggleTab}
 	}
 
 	l.KeyMap.Quit.SetKeys("q", "esc")
@@ -380,8 +598,10 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 	}
 
 	m := model{
-		list: l,
-		keys: keys,
+		list:       l,
+		keys:       keys,
+		homeDir:    homeDir,
+		pingStatus: make(map[string]string),
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())

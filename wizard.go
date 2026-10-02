@@ -783,3 +783,248 @@ func EditHostWizard(alias, homeDir string) (string, error) {
 
 	return newAlias, nil
 }
+
+// CloneHostWizard launches an interactive wizard pre-populated with an existing host's configuration
+// to create a duplicate or variant host under a new alias.
+func CloneHostWizard(alias, homeDir string) (string, error) {
+	hosts, err := LoadAllHosts(homeDir)
+	if err != nil {
+		return "", err
+	}
+
+	var targetHost *HostItem
+	for _, h := range hosts {
+		if strings.EqualFold(h.Alias, alias) {
+			targetHost = &h
+			break
+		}
+		for _, a := range h.AllAliases {
+			if strings.EqualFold(a, alias) {
+				targetHost = &h
+				break
+			}
+		}
+		if targetHost != nil {
+			break
+		}
+	}
+
+	if targetHost == nil {
+		return "", fmt.Errorf("host '%s' not found in SSH configuration", alias)
+	}
+
+	badge := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00D7D7")).
+		Padding(0, 1).
+		Render("📋 CLONE")
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FF5F87")).
+		Render(fmt.Sprintf(" Duplicate Connection: %s", targetHost.Alias))
+	desc := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#767676")).
+		Render("Create a new host entry pre-filled with this configuration")
+
+	fmt.Printf("\n%s%s\n%s\n\n", badge, title, desc)
+
+	configPath := targetHost.ConfigFile
+	if configPath == "" {
+		configPath = filepath.Join(homeDir, ".ssh", "config")
+	}
+
+	hostName := targetHost.HostName
+	userName := targetHost.User
+	port := targetHost.Port
+	if port <= 0 {
+		port = 22
+	}
+	portStr := strconv.Itoa(port)
+	newAlias := targetHost.Alias + "-clone"
+	proxyJump := targetHost.ProxyJump
+
+	authMethod := "default"
+	if !targetHost.PubkeyAuth || targetHost.PasswordAuth {
+		authMethod = "password"
+	} else if targetHost.IdentityFile != "" {
+		authMethod = "key"
+	}
+
+	theme := customHuhTheme()
+	sshDir := filepath.Join(homeDir, ".ssh")
+
+	formHost := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("New Host Alias").
+				Description("Unique nickname for this duplicated host").
+				Placeholder("e.g. prod-server-backup").
+				Value(&newAlias).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return errors.New("host alias is required")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("HostName / IP").
+				Description("FQDN or IP address of the target server").
+				Placeholder("e.g. 192.168.1.101").
+				Value(&hostName).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return errors.New("hostname is required")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("User").
+				Description("Remote login username").
+				Value(&userName),
+			huh.NewInput().
+				Title("Port").
+				Description("SSH port (standard is 22)").
+				Value(&portStr).
+				Validate(func(s string) error {
+					p, err := strconv.Atoi(strings.TrimSpace(s))
+					if err != nil || p <= 0 || p > 65535 {
+						return errors.New("port must be between 1 and 65535")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("ProxyJump").
+				Description("Optional jump host or bastion").
+				Placeholder("leave blank for direct connection").
+				Value(&proxyJump),
+		).Title("Step 1: Duplicate Host Parameters").Description("Customize details for the cloned host"),
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Authentication Method").
+				Description("Choose how you connect to this server").
+				Options(
+					huh.NewOption("SSH Key (IdentityFile) [Recommended]", "key"),
+					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", "password"),
+					huh.NewOption("Standard / Default (agent keys with password fallback)", "default"),
+				).
+				Value(&authMethod),
+		).Title("Step 2: Authentication").Description("Select authentication strategy"),
+	).WithTheme(theme)
+
+	if err := formHost.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p > 0 {
+		port = p
+	}
+
+	var identityFile string
+	if authMethod == "key" {
+		keyPath, err := selectOrGenerateKey(homeDir, sshDir, targetHost.IdentityFile, newAlias, userName, hostName, port, theme)
+		if err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				return "", nil
+			}
+			return "", err
+		}
+		identityFile = keyPath
+	}
+
+	pubkeyAuth := true
+	passwordAuth := false
+	switch authMethod {
+	case "password":
+		pubkeyAuth = false
+		passwordAuth = true
+		identityFile = ""
+	case "default":
+		pubkeyAuth = true
+		passwordAuth = false
+		identityFile = ""
+	case "key":
+		pubkeyAuth = true
+		passwordAuth = false
+	}
+
+	formattedKey := identityFile
+	if strings.HasPrefix(identityFile, homeDir) {
+		formattedKey = "~" + identityFile[len(homeDir):]
+	}
+
+	entry := HostEntry{
+		Alias:          newAlias,
+		HostName:       hostName,
+		User:           userName,
+		Port:           port,
+		IdentityFile:   formattedKey,
+		IdentitiesOnly: formattedKey != "",
+		PubkeyAuth:     pubkeyAuth,
+		PasswordAuth:   passwordAuth,
+		ProxyJump:      strings.TrimSpace(proxyJump),
+	}
+
+	var existingContent string
+	if data, err := os.ReadFile(filepath.Clean(configPath)); err == nil { //nolint:gosec // user SSH config path
+		existingContent = string(data)
+	}
+
+	if HasHost(existingContent, newAlias) {
+		var overwrite bool
+		formOverwrite := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(fmt.Sprintf("Host alias '%s' already exists. Overwrite?", newAlias)).
+					Description("Existing configuration for this alias will be replaced").
+					Value(&overwrite),
+			).Title("Host Conflict Warning"),
+		).WithTheme(theme)
+
+		if err := formOverwrite.Run(); err != nil || !overwrite {
+			return "", nil
+		}
+		existingContent = RemoveHost(existingContent, newAlias)
+	}
+
+	formattedBlock := entry.Format()
+	newContent := InsertHost(existingContent, formattedBlock)
+
+	if err := AtomicWrite(configPath, []byte(newContent), 0600); err != nil {
+		return "", fmt.Errorf("failed writing to %s: %w", configPath, err)
+	}
+
+	displayPath := configPath
+	if strings.HasPrefix(configPath, homeDir) {
+		displayPath = "~" + configPath[len(homeDir):]
+	}
+
+	successBadge := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#5FD787")).
+		Padding(0, 1).
+		Render(" ✔ CLONED ")
+
+	successTitle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#5FD787")).
+		Render(fmt.Sprintf(" Successfully created %s in %s", newAlias, displayPath))
+
+	card := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(0, 2).
+		MarginTop(1).
+		MarginBottom(1).
+		Render(highlightConfigBlock(formattedBlock))
+
+	fmt.Println()
+	fmt.Printf("%s%s\n", successBadge, successTitle)
+	fmt.Println(card)
+
+	return newAlias, nil
+}

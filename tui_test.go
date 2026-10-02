@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -127,5 +129,127 @@ func TestModelResponsiveTabToggle(t *testing.T) {
 	wideView := resWide.View()
 	if wideView == "" {
 		t.Errorf("expected non-empty wide view")
+	}
+}
+
+func TestModelInTUIDeletion(t *testing.T) {
+	items := []list.Item{
+		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
+		HostItem{Alias: "srv2", HostName: "srv2.example.com", Port: 22},
+	}
+	l := list.New(items, newCustomDelegate(), 80, 20)
+	keys := newListKeyMap()
+	m := model{
+		list: l,
+		keys: keys,
+	}
+
+	// 1. Press 'd': enters deletion confirmation mode without quitting
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if cmd != nil {
+		t.Errorf("expected nil cmd (no quit), got %v", cmd)
+	}
+	res := updated.(model)
+	if !res.confirmDelete {
+		t.Errorf("expected confirmDelete to be true")
+	}
+
+	// View renders confirmation prompt
+	viewStr := res.View()
+	if !strings.Contains(viewStr, "Delete host block for 'srv1'") {
+		t.Errorf("expected confirmation prompt in view, got:\n%s", viewStr)
+	}
+
+	// 2. Press 'n': cancels deletion
+	cancelled, _ := res.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	resCancelled := cancelled.(model)
+	if resCancelled.confirmDelete {
+		t.Errorf("expected confirmDelete to be false after 'n'")
+	}
+	if len(resCancelled.list.Items()) != 2 {
+		t.Errorf("expected 2 items preserved, got %d", len(resCancelled.list.Items()))
+	}
+}
+
+func TestModelYankAndPing(t *testing.T) {
+	items := []list.Item{
+		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
+	}
+	l := list.New(items, newCustomDelegate(), 80, 20)
+	keys := newListKeyMap()
+	m := model{
+		list: l,
+		keys: keys,
+	}
+
+	// 1. Yank: 'y' sets toast status
+	updatedYank, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	resYank := updatedYank.(model)
+	if !strings.Contains(resYank.statusMessage, "Copied 'ssh srv1'") {
+		t.Errorf("expected copied status message, got %q", resYank.statusMessage)
+	}
+
+	// 2. Ping: 'p' sets probing status and triggers ping command
+	updatedPing, cmdPing := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmdPing == nil {
+		t.Errorf("expected non-nil ping command")
+	}
+	resPing := updatedPing.(model)
+	if resPing.pingStatus["srv1"] != "⏳ Probing..." {
+		t.Errorf("expected probing status, got %q", resPing.pingStatus["srv1"])
+	}
+
+	// Ping result arrives
+	resultMsg := pingResultMsg{alias: "srv1", latency: 15 * time.Millisecond}
+	updatedResult, _ := resPing.Update(resultMsg)
+	resResult := updatedResult.(model)
+	if !strings.Contains(resResult.pingStatus["srv1"], "🟢 Reachable (15ms)") {
+		t.Errorf("expected reachable status, got %q", resResult.pingStatus["srv1"])
+	}
+}
+
+func TestModelRawToggle(t *testing.T) {
+	items := []list.Item{
+		HostItem{
+			Alias:    "srv1",
+			HostName: "srv1.example.com",
+			Port:     22,
+			RawLines: []string{"Host srv1", "    HostName srv1.example.com"},
+		},
+	}
+	l := list.New(items, newCustomDelegate(), 80, 20)
+	keys := newListKeyMap()
+	m := model{
+		list:  l,
+		keys:  keys,
+		width: 120,
+	}
+
+	// 'v' toggles raw view
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	res := updated.(model)
+	if !res.showRaw {
+		t.Errorf("expected showRaw true")
+	}
+
+	viewStr := res.View()
+	if !strings.Contains(viewStr, "Raw OpenSSH Configuration") {
+		t.Errorf("expected Raw OpenSSH Configuration in view, got:\n%s", viewStr)
+	}
+}
+
+func TestModelEmptyState(t *testing.T) {
+	l := list.New([]list.Item{}, newCustomDelegate(), 80, 20)
+	keys := newListKeyMap()
+	m := model{
+		list:   l,
+		keys:   keys,
+		width:  80,
+		height: 24,
+	}
+
+	viewStr := m.View()
+	if !strings.Contains(viewStr, "No SSH Hosts Found") {
+		t.Errorf("expected empty state card in view, got:\n%s", viewStr)
 	}
 }
