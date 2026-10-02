@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -209,7 +210,18 @@ func authMethodOf(e HostEntry) string {
 	}
 }
 
+// validateText rejects control characters, which could corrupt the config or inject directives.
+func validateText(s string) error {
+	if strings.IndexFunc(s, unicode.IsControl) != -1 {
+		return errors.New("value cannot contain control characters")
+	}
+	return nil
+}
+
 func validateAlias(s string) error {
+	if err := validateText(s); err != nil {
+		return err
+	}
 	fields := strings.Fields(s)
 	if len(fields) == 0 {
 		return errors.New("host alias is required")
@@ -226,6 +238,9 @@ func validateAlias(s string) error {
 }
 
 func validateHostName(s string) error {
+	if err := validateText(s); err != nil {
+		return err
+	}
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return errors.New("hostname is required")
@@ -264,7 +279,8 @@ func runHostForm(mode wizardMode, v *hostFormValues, theme *huh.Theme) error {
 		Title("User").
 		Description("Remote login username").
 		Placeholder(currentUsername()).
-		Value(&v.user)
+		Value(&v.user).
+		Validate(validateText)
 	portInput := huh.NewInput().
 		Title("Port").
 		Description("SSH port (standard is 22)").
@@ -275,7 +291,8 @@ func runHostForm(mode wizardMode, v *hostFormValues, theme *huh.Theme) error {
 		Title("ProxyJump").
 		Description("Optional jump host or bastion (e.g. bastion.lan)").
 		Placeholder("leave blank for direct connection").
-		Value(&v.proxyJump)
+		Value(&v.proxyJump).
+		Validate(validateText)
 
 	fields := []huh.Field{hostInput, aliasInput, userInput, portInput, proxyInput}
 	if mode == wizardClone {

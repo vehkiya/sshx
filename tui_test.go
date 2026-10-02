@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -170,7 +173,7 @@ func TestModelInTUIDeletion(t *testing.T) {
 
 	// View renders confirmation prompt
 	viewStr := res.View()
-	if !strings.Contains(viewStr, "Delete host block for 'srv1'") {
+	if !strings.Contains(viewStr, "Delete host 'srv1'") {
 		t.Errorf("expected confirmation prompt in view, got:\n%s", viewStr)
 	}
 
@@ -339,5 +342,75 @@ Host test-srv
 	}
 	if !strings.Contains(highlighted, "# Indented directive comment") {
 		t.Errorf("expected indented comment in output")
+	}
+}
+
+func TestMain(m *testing.M) {
+	copyToClipboard = func(string) {}
+	os.Exit(m.Run())
+}
+
+func TestModelDeleteWhileFiltered(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(sshDir, "config")
+	content := "Host alpha\n    HostName a.lan\n\nHost bravo\n    HostName b.lan\n\nHost charlie c2\n    HostName c.lan\n"
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hosts, err := LoadAllHosts(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := make([]list.Item, len(hosts))
+	for i, h := range hosts {
+		items[i] = h
+	}
+
+	l := list.New(items, newCustomDelegate(), 80, 20)
+	l.SetFilterText("charlie")
+	m := model{list: l, keys: newListKeyMap(), homeDir: tmpDir}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	updated, _ = updated.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	res := updated.(model)
+
+	var remaining []string
+	for _, it := range res.list.Items() {
+		remaining = append(remaining, it.(HostItem).Alias)
+	}
+	if strings.Join(remaining, ",") != "alpha,bravo" {
+		t.Errorf("expected alpha,bravo to remain in the list, got %v", remaining)
+	}
+
+	data, err := os.ReadFile(configPath) //nolint:gosec // test file read
+	if err != nil {
+		t.Fatal(err)
+	}
+	if HasHost(string(data), "charlie") || HasHost(string(data), "c2") {
+		t.Errorf("expected every alias of charlie to be removed, got:\n%s", data)
+	}
+	if !HasHost(string(data), "alpha") || !HasHost(string(data), "bravo") {
+		t.Errorf("expected other hosts to be kept, got:\n%s", data)
+	}
+}
+
+func TestPingStatusText(t *testing.T) {
+	tests := []struct {
+		msg  pingResultMsg
+		want string
+	}{
+		{pingResultMsg{latency: 15 * time.Millisecond}, "🟢 Reachable (15ms)"},
+		{pingResultMsg{via: "bastion", latency: 7 * time.Millisecond}, "🟢 Jump host bastion reachable (7ms)"},
+		{pingResultMsg{err: &timeoutErr{}}, "🔴 Timeout (>1.5s)"},
+		{pingResultMsg{via: "bastion", err: errors.New("connection refused")}, "🔴 Jump host bastion unreachable"},
+	}
+	for _, tc := range tests {
+		if got := pingStatusText(tc.msg); got != tc.want {
+			t.Errorf("pingStatusText(%+v) = %q; expected %q", tc.msg, got, tc.want)
+		}
 	}
 }

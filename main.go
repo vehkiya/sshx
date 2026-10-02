@@ -2,17 +2,26 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// subcommands are the CLI verbs; any other first argument is treated as a host to connect to.
+var subcommands = map[string]bool{
+	"add": true, "ls": true, "list": true, "rm": true, "delete": true, "remove": true,
+	"clone": true, "dup": true, "duplicate": true, "probe": true, "ping": true,
+	"update": true, "upgrade": true, "check-update": true, "edit": true, "connect": true,
+}
 
 func main() {
 	homeDir, err := os.UserHomeDir()
@@ -21,169 +30,156 @@ func main() {
 		os.Exit(1)
 	}
 
-	for _, a := range os.Args[1:] {
-		if a == "-v" || a == "--version" || a == "version" {
-			fmt.Printf("sshx %s (commit: %s, built: %s)\n", Version, Commit, BuildDate)
-			return
-		}
-		if a == "-h" || a == "--help" || a == "help" {
-			printUsage()
-			return
-		}
-	}
-
 	args := os.Args[1:]
-	binName := filepath.Base(os.Args[0])
+	binName := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 	if binName == "ssh-add-host" || binName == "fssh-add" {
 		args = append([]string{"add"}, args...)
 	}
 
-	if len(args) > 0 {
-		cmd := strings.ToLower(args[0])
+	os.Exit(run(args, homeDir))
+}
 
-		switch cmd {
-		case "add":
-			target := ""
-			alias := ""
-			if len(args) > 1 {
-				target = args[1]
-			}
-			if len(args) > 2 {
-				alias = args[2]
-			}
-			connectTarget, connectNow, err := AddHostWizard(target, alias, homeDir, true)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			if connectNow && connectTarget != "" {
-				connectSSH(connectTarget)
-			}
-			return
-
-		case "ls", "list":
-			listHosts(homeDir)
-			return
-
-		case "rm", "delete", "remove":
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: sshx rm <alias>")
-				os.Exit(1)
-			}
-			alias := args[1]
-			if err := DeleteHostPrompt(alias, homeDir); err != nil {
-				fmt.Fprintf(os.Stderr, "Error deleting host: %v\n", err)
-				os.Exit(1)
-			}
-			return
-
-		case "clone", "dup", "duplicate":
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: sshx clone <alias>")
-				os.Exit(1)
-			}
-			alias := args[1]
-			if _, err := CloneHostWizard(alias, homeDir); err != nil {
-				fmt.Fprintf(os.Stderr, "Error cloning host: %v\n", err)
-				os.Exit(1)
-			}
-			return
-
-		case "probe", "ping":
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: sshx probe <alias>")
-				os.Exit(1)
-			}
-			alias := args[1]
-			probeHostCLI(alias, homeDir)
-			return
-
-		case "update", "upgrade":
-			force := false
-			checkOnly := false
-			for _, a := range args[1:] {
-				if a == "--force" || a == "-f" {
-					force = true
-				}
-				if a == "--check" || a == "-c" {
-					checkOnly = true
-				}
-			}
-			if checkOnly {
-				rel, isNewer, err := CheckLatestRelease(Version)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
-					os.Exit(1)
-				}
-				if isNewer {
-					fmt.Printf("Update available: %s -> %s (run 'sshx update' to upgrade)\n", Version, rel.TagName)
-				} else {
-					fmt.Printf("sshx is up to date (%s)\n", Version)
-				}
-				return
-			}
-			if _, err := PerformUpdate(Version, os.Stdout, force); err != nil {
-				fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
-				os.Exit(1)
-			}
-			return
-
-		case "check-update":
-			rel, isNewer, err := CheckLatestRelease(Version)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
-				os.Exit(1)
-			}
-			if isNewer {
-				fmt.Printf("Update available: %s -> %s (run 'sshx update' to upgrade)\n", Version, rel.TagName)
-			} else {
-				fmt.Printf("sshx is up to date (%s)\n", Version)
-			}
-			return
-
-		case "edit":
-			if len(args) > 1 {
-				alias := args[1]
-				if _, err := EditHostWizard(alias, homeDir); err != nil {
-					fmt.Fprintf(os.Stderr, "Error editing host: %v\n", err)
-					os.Exit(1)
-				}
-				return
-			}
-			openEditor(homeDir)
-			return
-
-		case "connect":
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: sshx connect <alias>")
-				os.Exit(1)
-			}
-			connectSSH(args[1])
-			return
-
-		default:
-			// If first argument does not start with "-", check if it's a known host alias!
-			if !strings.HasPrefix(cmd, "-") {
-				hosts, _ := LoadAllHosts(homeDir)
-				for _, h := range hosts {
-					for _, a := range h.AllAliases {
-						if strings.EqualFold(a, cmd) {
-							connectSSH(h.Alias)
-							return
-						}
-					}
-				}
-			}
-		}
+// run dispatches the command line and returns the process exit code.
+func run(args []string, homeDir string) int {
+	if len(args) == 0 {
+		return runTUILoop(homeDir)
 	}
 
-	// Default: Launch TUI loop
+	cmd := strings.ToLower(args[0])
+	switch cmd {
+	case "-v", "--version", "version":
+		fmt.Printf("sshx %s (commit: %s, built: %s)\n", Version, Commit, BuildDate)
+		return 0
+	case "-h", "--help", "help":
+		printUsage()
+		return 0
+	}
+	if subcommands[cmd] && len(args) > 1 && (args[1] == "-h" || args[1] == "--help") {
+		printUsage()
+		return 0
+	}
+
+	switch cmd {
+	case "add":
+		target := ""
+		alias := ""
+		if len(args) > 1 {
+			target = args[1]
+		}
+		if len(args) > 2 {
+			alias = args[2]
+		}
+		connectTarget, connectNow, err := AddHostWizard(target, alias, homeDir, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		if connectNow && connectTarget != "" {
+			return connectSSH(connectTarget)
+		}
+		return 0
+
+	case "ls", "list":
+		return listHosts(os.Stdout, homeDir)
+
+	case "rm", "delete", "remove":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: sshx rm <alias>")
+			return 2
+		}
+		if err := DeleteHostPrompt(args[1], homeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error deleting host: %v\n", err)
+			return 1
+		}
+		return 0
+
+	case "clone", "dup", "duplicate":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: sshx clone <alias>")
+			return 2
+		}
+		if _, err := CloneHostWizard(args[1], homeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error cloning host: %v\n", err)
+			return 1
+		}
+		return 0
+
+	case "probe", "ping":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: sshx probe <alias>")
+			return 2
+		}
+		return probeHostCLI(args[1], homeDir)
+
+	case "update", "upgrade":
+		force := false
+		checkOnly := false
+		for _, a := range args[1:] {
+			switch a {
+			case "--force", "-f":
+				force = true
+			case "--check", "-c":
+				checkOnly = true
+			}
+		}
+		if checkOnly {
+			return checkForUpdate()
+		}
+		if _, err := PerformUpdate(Version, os.Stdout, force); err != nil {
+			fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
+			return 1
+		}
+		return 0
+
+	case "check-update":
+		return checkForUpdate()
+
+	case "edit":
+		if len(args) > 1 {
+			if _, err := EditHostWizard(args[1], homeDir); err != nil {
+				fmt.Fprintf(os.Stderr, "Error editing host: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+		openEditor(homeDir)
+		return 0
+
+	case "connect":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: sshx connect <alias|target> [command...]")
+			return 2
+		}
+		return connectSSH(args[1], args[2:]...)
+	}
+
+	if strings.HasPrefix(cmd, "-") {
+		fmt.Fprintf(os.Stderr, "sshx: unknown option %q\nRun 'sshx --help' for usage.\n", args[0])
+		return 2
+	}
+
+	hosts, _ := LoadAllHosts(homeDir)
+	if h, ok := FindHost(hosts, args[0]); ok {
+		return connectSSH(h.Alias, args[1:]...)
+	}
+	// Anything that looks like a target (user@host, an FQDN or IP) goes straight to ssh,
+	// which may still match it against Host patterns.
+	if strings.ContainsAny(args[0], "@.:") {
+		return connectSSH(args[0], args[1:]...)
+	}
+
+	fmt.Fprintf(os.Stderr, "sshx: unknown command or host alias %q\nRun 'sshx ls' to list hosts, or 'sshx connect %s' to pass it to ssh as-is.\n", args[0], args[0])
+	return 2
+}
+
+// runTUILoop shows the host browser, runs the action it returns, and reopens it until the user connects or quits.
+func runTUILoop(homeDir string) int {
 	lastSelected := ""
 	for {
 		choice, action, err := RunTUI(homeDir, lastSelected)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		if choice != "" {
 			lastSelected = choice
@@ -192,12 +188,15 @@ func main() {
 		switch action {
 		case "connect":
 			if choice != "" {
-				connectSSH(choice)
+				return connectSSH(choice)
 			}
-			return
+			return 0
 
 		case "add":
-			addedAlias, _, _ := AddHostWizard("", "", homeDir, false)
+			addedAlias, _, err := AddHostWizard("", "", homeDir, false)
+			if reportWizardError(err) {
+				continue
+			}
 			if addedAlias != "" {
 				lastSelected = addedAlias
 			}
@@ -205,7 +204,10 @@ func main() {
 		case "edit-host":
 			if choice != "" {
 				editedAlias, err := EditHostWizard(choice, homeDir)
-				if err == nil && editedAlias != "" {
+				if reportWizardError(err) {
+					continue
+				}
+				if editedAlias != "" {
 					lastSelected = editedAlias
 				}
 			}
@@ -213,15 +215,12 @@ func main() {
 		case "clone-host":
 			if choice != "" {
 				clonedAlias, err := CloneHostWizard(choice, homeDir)
-				if err == nil && clonedAlias != "" {
+				if reportWizardError(err) {
+					continue
+				}
+				if clonedAlias != "" {
 					lastSelected = clonedAlias
 				}
-			}
-
-		case "delete":
-			if choice != "" {
-				_ = DeleteHostPrompt(choice, homeDir)
-				pausePrompt()
 			}
 
 		case "copy-id":
@@ -239,15 +238,25 @@ func main() {
 				fmt.Fprintf(os.Stderr, "\nUpdate error: %v\n", err)
 				pausePrompt()
 			} else if updated {
-				return
+				return 0
 			} else {
 				pausePrompt()
 			}
 
-		case "quit", "":
-			return
+		default:
+			return 0
 		}
 	}
+}
+
+// reportWizardError shows a wizard failure before the TUI redraws over it. It reports whether there was one.
+func reportWizardError(err error) bool {
+	if err == nil {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+	pausePrompt()
+	return true
 }
 
 func pausePrompt() {
@@ -256,19 +265,34 @@ func pausePrompt() {
 	_, _ = reader.ReadString('\n')
 }
 
+func checkForUpdate() int {
+	rel, isNewer, err := CheckLatestRelease(Version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+		return 1
+	}
+	if isNewer {
+		fmt.Printf("Update available: %s -> %s (run 'sshx update' to upgrade)\n", Version, rel.TagName)
+	} else {
+		fmt.Printf("sshx is up to date (%s)\n", Version)
+	}
+	return 0
+}
+
 func printUsage() {
 	header := lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("sshx — TUI SSH Connection Manager")
 	fmt.Printf("%s\n\n", header)
 	fmt.Println("Usage:")
-	fmt.Println("  sshx                      Launch interactive host browser")
-	fmt.Println("  sshx <alias>              Directly connect to host")
-	fmt.Println("  sshx add [target] [alias] Interactively add a new SSH host")
-	fmt.Println("  sshx ls                   List all configured SSH hosts")
-	fmt.Println("  sshx rm <alias>           Remove a host from ~/.ssh/config")
-	fmt.Println("  sshx edit [alias]         Edit host in wizard, or open ~/.ssh/config in $EDITOR")
-	fmt.Println("  sshx clone <alias>        Duplicate / clone an existing host")
-	fmt.Println("  sshx probe <alias>        Probe TCP reachability / ping host")
-	fmt.Println("  sshx update [--check]     Check for and install latest release update")
+	fmt.Println("  sshx                          Launch interactive host browser")
+	fmt.Println("  sshx <alias> [command...]     Connect to host (optionally run a remote command)")
+	fmt.Println("  sshx connect <target> [cmd]   Pass any target straight to ssh")
+	fmt.Println("  sshx add [target] [alias]     Interactively add a new SSH host")
+	fmt.Println("  sshx ls                       List all configured SSH hosts")
+	fmt.Println("  sshx rm <alias>               Remove a host from its SSH config file")
+	fmt.Println("  sshx edit [alias]             Edit host in wizard, or open ~/.ssh/config in $EDITOR")
+	fmt.Println("  sshx clone <alias>            Duplicate / clone an existing host")
+	fmt.Println("  sshx probe <alias>            Probe TCP reachability / ping host")
+	fmt.Println("  sshx update [--check]         Check for and install latest release update")
 	fmt.Println()
 	fmt.Println("TUI Keybindings:")
 	fmt.Println("  Enter      Connect to selected host")
@@ -287,29 +311,30 @@ func printUsage() {
 	fmt.Println("  q, Esc     Quit")
 }
 
-func listHosts(homeDir string) {
+func listHosts(w io.Writer, homeDir string) int {
 	hosts, err := LoadAllHosts(homeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading hosts: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if len(hosts) == 0 {
-		fmt.Println("No configured SSH hosts found in ~/.ssh/config.")
-		return
+		_, _ = fmt.Fprintln(w, "No configured SSH hosts found in ~/.ssh/config.")
+		return 0
 	}
+	writeHostTable(w, hosts)
+	return 0
+}
 
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorPurple)
-	fmt.Printf("%-20s %-30s %-16s %s\n",
-		headerStyle.Render("ALIAS"),
-		headerStyle.Render("TARGET"),
-		headerStyle.Render("PORT"),
-		headerStyle.Render("AUTH"),
-	)
-	fmt.Println(strings.Repeat("─", 80))
-
+// writeHostTable prints hosts as aligned columns, padding by display width so colours and wide characters line up.
+func writeHostTable(w io.Writer, hosts []HostItem) {
+	headers := []string{"ALIAS", "TARGET", "PORT", "AUTH"}
+	rows := make([][]string, 0, len(hosts))
 	for _, h := range hosts {
 		target := h.HostName
+		if target == "" {
+			target = h.Alias
+		}
 		if h.User != "" {
 			target = h.User + "@" + target
 		}
@@ -319,36 +344,107 @@ func listHosts(homeDir string) {
 		} else if h.IdentityFile != "" {
 			auth = filepath.Base(h.IdentityFile)
 		}
-
-		fmt.Printf("%-20s %-30s %-16d %s\n", h.Alias, target, h.Port, auth)
+		rows = append(rows, []string{h.Alias, target, strconv.Itoa(h.Port), auth})
 	}
-}
 
-func connectSSH(alias string) {
-	fmt.Printf("Connecting to %s...\n\n", alias)
-	cmd := exec.Command("ssh", alias) //nolint:gosec // intentional user SSH connection
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
-}
-
-func openEditor(homeDir string) {
-	configPath := filepath.Join(homeDir, ".ssh", "config")
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		if _, err := exec.LookPath("nvim"); err == nil {
-			editor = "nvim"
-		} else {
-			editor = "vim"
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = lipgloss.Width(h)
+	}
+	for _, r := range rows {
+		for i, c := range r {
+			widths[i] = max(widths[i], lipgloss.Width(c))
 		}
 	}
 
-	cmd := exec.Command(editor, configPath) //nolint:gosec // intentional editor launch
+	render := func(cells []string, style *lipgloss.Style) string {
+		out := make([]string, len(cells))
+		for i, c := range cells {
+			if i < len(cells)-1 {
+				c += strings.Repeat(" ", widths[i]-lipgloss.Width(c))
+			}
+			if style != nil {
+				c = style.Render(c)
+			}
+			out[i] = c
+		}
+		return strings.Join(out, "  ")
+	}
+
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorPurple)
+	total := 2 * (len(widths) - 1)
+	for _, wd := range widths {
+		total += wd
+	}
+
+	_, _ = fmt.Fprintln(w, render(headers, &headerStyle))
+	_, _ = fmt.Fprintln(w, strings.Repeat("─", total))
+	for _, r := range rows {
+		_, _ = fmt.Fprintln(w, render(r, nil))
+	}
+}
+
+// connectSSH runs ssh against target, forwarding any remote command, and returns ssh's exit code.
+func connectSSH(target string, command ...string) int {
+	if len(command) == 0 {
+		fmt.Fprintf(os.Stderr, "Connecting to %s...\n\n", target)
+	}
+	cmd := exec.Command("ssh", append([]string{target}, command...)...) //nolint:gosec // intentional user SSH connection
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if code := exitErr.ExitCode(); code > 0 {
+				return code
+			}
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "sshx: failed to run ssh: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// openEditor opens ~/.ssh/config in $VISUAL or $EDITOR. On Unix the editor
+// command runs through sh, like git does, so values such as "code -w" work.
+func openEditor(homeDir string) {
+	configPath := filepath.Join(homeDir, ".ssh", "config")
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
+	if editor == "" {
+		fallbacks := []string{"nvim", "vim", "vi", "nano"}
+		if runtime.GOOS == "windows" {
+			fallbacks = []string{"notepad"}
+		}
+		for _, candidate := range fallbacks {
+			if _, err := exec.LookPath(candidate); err == nil {
+				editor = candidate
+				break
+			}
+		}
+	}
+	if editor == "" {
+		fmt.Fprintln(os.Stderr, "No editor found; set $EDITOR to edit your SSH config.")
+		return
+	}
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		fields := strings.Fields(editor)
+		cmd = exec.Command(fields[0], append(fields[1:], configPath)...) //nolint:gosec // intentional editor launch
+	} else {
+		cmd = exec.Command("sh", "-c", editor+` "$1"`, "sh", configPath) //nolint:gosec // intentional editor launch
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Editor exited with an error: %v\n", err)
+	}
 }
 
 func runCopyIDForHost(alias, homeDir string) {
@@ -382,57 +478,31 @@ func runCopyIDForHost(alias, homeDir string) {
 	}
 }
 
-func probeHostCLI(alias, homeDir string) {
+func probeHostCLI(alias, homeDir string) int {
 	hosts, err := LoadAllHosts(homeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading hosts: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
-	var targetHost *HostItem
-	for _, h := range hosts {
-		if strings.EqualFold(h.Alias, alias) {
-			targetHost = &h
-			break
-		}
-		for _, a := range h.AllAliases {
-			if strings.EqualFold(a, alias) {
-				targetHost = &h
-				break
-			}
-		}
-		if targetHost != nil {
-			break
-		}
-	}
-
-	if targetHost == nil {
+	targetHost, ok := FindHost(hosts, alias)
+	if !ok {
 		fmt.Fprintf(os.Stderr, "Host '%s' not found in SSH configuration.\n", alias)
-		os.Exit(1)
+		return 1
 	}
 
-	host := targetHost.HostName
-	if host == "" {
-		host = targetHost.Alias
-	}
-	host = strings.Trim(host, "[]")
-	port := targetHost.Port
-	if port <= 0 {
-		port = 22
+	addr, via := probeAddress(targetHost, hosts)
+	if via != "" {
+		fmt.Printf("%s is behind ProxyJump %s; probing the jump host (%s)...\n", targetHost.Alias, via, addr)
+	} else {
+		fmt.Printf("Probing TCP reachability for %s (%s)...\n", targetHost.Alias, addr)
 	}
 
-	target := net.JoinHostPort(host, strconv.Itoa(port))
-	fmt.Printf("Probing TCP reachability for %s (%s)...\n", targetHost.Alias, target)
-
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", target, 2*time.Second)
+	latency, err := probeTCP(addr, 2*time.Second)
 	if err != nil {
-		failBadge := badge(" UNREACHABLE ", colorWhite, colorRed)
-		fmt.Printf("\n%s Failed to connect to %s: %v\n", failBadge, target, err)
-		os.Exit(1)
+		fmt.Printf("\n%s Failed to connect to %s: %v\n", badge(" UNREACHABLE ", colorWhite, colorRed), addr, err)
+		return 1
 	}
-	_ = conn.Close()
-	latency := time.Since(start).Milliseconds()
-	okBadge := badge(" REACHABLE ", colorBlack, colorGreen)
-	fmt.Printf("\n%s Connected to %s in %dms\n", okBadge, target, latency)
+	fmt.Printf("\n%s Connected to %s in %dms\n", badge(" REACHABLE ", colorBlack, colorGreen), addr, latency.Milliseconds())
+	return 0
 }

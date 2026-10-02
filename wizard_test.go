@@ -60,8 +60,13 @@ func TestValidateAlias(t *testing.T) {
 			t.Errorf("validateAlias(%q) = nil; expected an error", bad)
 		}
 	}
-	if err := validateHostName("two words"); err == nil {
-		t.Errorf("expected hostnames with spaces to be rejected")
+	for _, bad := range []string{"two words", "host\x1b]11;rgb:0/0/0\a", "host\n    ProxyCommand evil"} {
+		if err := validateHostName(bad); err == nil {
+			t.Errorf("validateHostName(%q) = nil; expected an error", bad)
+		}
+	}
+	if err := validateText("root\n    ProxyCommand evil"); err == nil {
+		t.Errorf("expected control characters in free-text fields to be rejected")
 	}
 }
 
