@@ -84,6 +84,7 @@ Launch the interactive host manager simply by typing `sshx`:
 | `p` | Probe TCP reachability / ping host |
 | `v` | Toggle raw OpenSSH config view |
 | `d`, `x` | Delete selected host (with in-TUI confirmation) |
+| `U` | Upgrade sshx to latest release |
 | `E` | Open `~/.ssh/config` directly in `$EDITOR` |
 | `Tab` | Toggle host details inspector (on compact displays) |
 | `q` / `Esc` | Exit |
@@ -113,6 +114,12 @@ sshx clone prod-server
 
 # Probe TCP reachability / ping host
 sshx probe prod-server
+
+# Check for updates and automatically upgrade
+sshx update
+
+# Check if a new version is available without upgrading
+sshx update --check
 
 # List all configured SSH hosts in terminal
 sshx ls
