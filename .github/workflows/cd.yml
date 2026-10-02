@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: cd-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   validate:
@@ -30,7 +30,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify Commit is Branch Tip
+        id: check_tip
+        run: |
+          git fetch origin "${{ github.ref_name }}" --tags
+          REMOTE_HEAD=$(git rev-parse "origin/${{ github.ref_name }}")
+          LOCAL_HEAD=$(git rev-parse HEAD)
+          echo "Current runner commit: $LOCAL_HEAD"
+          echo "Latest branch commit:  $REMOTE_HEAD"
+          if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
+            echo "is_latest=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Current commit ($LOCAL_HEAD) is superseded by origin/${{ github.ref_name }} ($REMOTE_HEAD). Skipping release to prevent out-of-order release generation."
+          else
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Calculate Semantic Version
+        if: steps.check_tip.outputs.is_latest == 'true'
         id: version
         uses: PaulHatch/semantic-version@502226b17e3e242e4befd0a45690fcbb27dd1373 # v6.0.3
         with:
@@ -41,13 +57,32 @@ jobs:
           minor_pattern: "/feat(\\(.+\\))?:/"
           version_format: "${major}.${minor}.${patch}"
 
+      - name: Verify Tag Does Not Already Exist
+        id: check_tag
+        if: steps.check_tip.outputs.is_latest == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version_tag }}"
+          if [ -z "$VERSION" ]; then
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin --tags
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "::warning::Tag ${VERSION} already exists on remote. Skipping release."
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Go
+        if: steps.check_tip.outputs.is_latest == 'true' && steps.check_tag.outputs.valid == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: "go.mod"
           cache: true
 
       - name: Build Multi-Platform Release Archives
+        if: steps.check_tip.outputs.is_latest == 'true' && steps.check_tag.outputs.valid == 'true'
         run: |
           VERSION="${{ steps.version.outputs.version_tag }}"
           if [ -z "$VERSION" ]; then
@@ -91,7 +126,7 @@ jobs:
           cd ..
 
       - name: Generate Changelog
-        if: steps.version.outputs.version_tag
+        if: steps.check_tip.outputs.is_latest == 'true' && steps.check_tag.outputs.valid == 'true'
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
           if [ -z "$PREV_TAG" ]; then
@@ -101,7 +136,7 @@ jobs:
           fi
 
       - name: Push Git Tag
-        if: steps.version.outputs.version_tag
+        if: steps.check_tip.outputs.is_latest == 'true' && steps.check_tag.outputs.valid == 'true'
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
@@ -109,7 +144,7 @@ jobs:
           git push origin ${{ steps.version.outputs.version_tag }}
 
       - name: Create GitHub Release
-        if: steps.version.outputs.version_tag
+        if: steps.check_tip.outputs.is_latest == 'true' && steps.check_tag.outputs.valid == 'true'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ steps.version.outputs.version_tag }}
