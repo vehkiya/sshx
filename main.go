@@ -122,7 +122,7 @@ func main() {
 				}
 				return
 			}
-			if err := PerformUpdate(Version, os.Stdout, force); err != nil {
+			if _, err := PerformUpdate(Version, os.Stdout, force); err != nil {
 				fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
 				os.Exit(1)
 			}
@@ -234,8 +234,15 @@ func main() {
 			openEditor(homeDir)
 
 		case "upgrade":
-			_ = PerformUpdate(Version, os.Stdout, false)
-			pausePrompt()
+			updated, err := PerformUpdate(Version, os.Stdout, false)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\nUpdate error: %v\n", err)
+				pausePrompt()
+			} else if updated {
+				return
+			} else {
+				pausePrompt()
+			}
 
 		case "quit", "":
 			return
