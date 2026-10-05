@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -43,6 +44,8 @@ func TestIsNewerVersion(t *testing.T) {
 		{"v0.3.0-rc1", "v0.3.0", true},
 		{"v0.3.1-0.20261002093000-abcdef123456", "v0.3.0", false},
 		{"v0.3.1-0.20261002093000-abcdef123456+dirty", "v0.3.1", true},
+		{"v0.3.1+dirty", "v0.3.1", false}, // a modified local build of v0.3.1
+		{"v0.3.1+dirty", "v0.3.2", true},
 		{"v0.3.0", "v0.3.0-rc2", false},
 	}
 
@@ -62,6 +65,7 @@ func TestParseSemVerParts(t *testing.T) {
 		{"1.2.3", [3]int{1, 2, 3}},
 		{"0.3.0", [3]int{0, 3, 0}},
 		{"0.3.0-beta.1", [3]int{0, 3, 0}},
+		{"0.3.1+dirty", [3]int{0, 3, 1}},
 		{"2", [3]int{2, 0, 0}},
 		{"", [3]int{0, 0, 0}},
 	}
@@ -463,4 +467,80 @@ func makeTestArchive(t *testing.T, goos, dir string, binary []byte) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func TestFetchVerifiedBinaryPicksTheExactArchive(t *testing.T) {
+	priv, pub := newSigningKey(t)
+	binary := []byte("new-sshx-binary")
+	name := "sshx_v1.0.0_linux_amd64"
+	archive := makeTestArchive(t, "linux", name, binary)
+	checksums := []byte(fmt.Sprintf("%x  %s.tar.gz\n", sha256.Sum256(archive), name))
+	files := map[string][]byte{
+		name + ".tar.gz":       archive,
+		name + "_debug.tar.gz": []byte("a different build that shares the prefix"),
+		checksumsAsset:         checksums,
+		signatureAsset:         sign(priv, checksums),
+	}
+	rel := serveRelease(t, "v1.0.0", files)
+	// List the look-alike last, where a prefix match would have picked it.
+	for i, a := range rel.Assets {
+		if strings.HasSuffix(a.Name, "_debug.tar.gz") {
+			rel.Assets = append(append(rel.Assets[:i:i], rel.Assets[i+1:]...), a)
+			break
+		}
+	}
+
+	got, err := fetchVerifiedBinary(rel, "linux", "amd64", []string{pub}, io.Discard)
+	if err != nil || !bytes.Equal(got, binary) {
+		t.Fatalf("expected the exact archive, got %q (err %v)", got, err)
+	}
+}
+
+func TestPerformUpdate(t *testing.T) {
+	useTempCacheDir(t)
+	priv, pub := newSigningKey(t)
+	oldKeys := trustedSigningKeys
+	trustedSigningKeys = []string{pub}
+	t.Cleanup(func() { trustedSigningKeys = oldKeys })
+
+	// A stand-in for the running binary, so the test never replaces itself.
+	exe := filepath.Join(t.TempDir(), "sshx")
+	if err := os.WriteFile(exe, []byte("old-sshx"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldExe := executablePath
+	executablePath = func() (string, error) { return exe, nil }
+	t.Cleanup(func() { executablePath = oldExe })
+
+	goos, goarch := runtime.GOOS, runtime.GOARCH
+	name := fmt.Sprintf("sshx_v1.0.0_%s_%s", goos, goarch)
+	archive := makeTestArchive(t, goos, name, []byte("new-sshx"))
+	archiveName := name + ".tar.gz"
+	if goos == "windows" {
+		archiveName = name + ".zip"
+	}
+	checksums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName))
+	rel := serveRelease(t, "v1.0.0", map[string][]byte{archiveName: archive, checksumsAsset: checksums, signatureAsset: sign(priv, checksums)})
+
+	// The latest-release API, on its own server.
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(rel)
+	}))
+	t.Cleanup(api.Close)
+	oldURL := releasesAPIURL
+	releasesAPIURL = api.URL
+	t.Cleanup(func() { releasesAPIURL = oldURL })
+
+	updated, err := PerformUpdate("v0.9.0", io.Discard, false)
+	if err != nil || !updated {
+		t.Fatalf("expected an update, got updated=%v err=%v", updated, err)
+	}
+	if data, _ := os.ReadFile(exe); string(data) != "new-sshx" { //nolint:gosec // test file read
+		t.Errorf("expected the new binary in place, got %q", data)
+	}
+
+	// Already current: nothing to do.
+	if updated, err := PerformUpdate("v1.0.0", io.Discard, false); err != nil || updated {
+		t.Errorf("expected no update when current, got updated=%v err=%v", updated, err)
+	}
 }
