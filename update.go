@@ -26,10 +26,9 @@ import (
 )
 
 const (
-	repoOwner      = "vehkiya"
-	repoName       = "sshx"
-	releasesAPIURL = "https://api.github.com/repos/vehkiya/sshx/releases/latest"
-	cacheTTL       = 6 * time.Hour
+	repoOwner = "vehkiya"
+	repoName  = "sshx"
+	cacheTTL  = 6 * time.Hour
 
 	// legacyUpdateCacheFile is where older versions kept the cache, inside ~/.ssh.
 	legacyUpdateCacheFile = ".sshx_update_cache"
@@ -55,8 +54,14 @@ var trustedSigningKeys = []string{
 	"8BjKVqaALl5z4zMcLMFM5Yvm+CZ7qyStyVqZZeefLMQ=",
 }
 
-// renameFile is os.Rename, replaceable in tests to simulate failures.
-var renameFile = os.Rename
+// These are replaceable in tests: renameFile to simulate failures,
+// releasesAPIURL and executablePath to run a whole update against a local
+// server and a stand-in binary.
+var (
+	renameFile     = os.Rename
+	releasesAPIURL = "https://api.github.com/repos/vehkiya/sshx/releases/latest"
+	executablePath = currentExecutablePath
+)
 
 // ReleaseAsset represents a single downloadable file in a GitHub release.
 type ReleaseAsset struct {
@@ -199,7 +204,9 @@ func isPrerelease(v string) bool {
 
 func parseSemVerParts(v string) [3]int {
 	var parts [3]int
-	if idx := strings.Index(v, "-"); idx != -1 {
+	// Drop the pre-release and build metadata (v0.3.1-rc1, v0.3.1+dirty):
+	// a modified local build of v0.3.1 is still v0.3.1, not v0.3.0.
+	if idx := strings.IndexAny(v, "-+"); idx != -1 {
 		v = v[:idx]
 	}
 	segments := strings.Split(v, ".")
@@ -263,15 +270,15 @@ func fetchVerifiedBinary(rel *ReleaseInfo, goos, goarch string, keys []string, s
 		binName = "sshx.exe"
 	}
 
-	expectedPrefix := fmt.Sprintf("sshx_%s_%s_%s", rel.TagName, goos, goarch)
+	expectedName := fmt.Sprintf("sshx_%s_%s_%s%s", rel.TagName, goos, goarch, expectedExt)
 	var assetURL, assetName, checksumURL, signatureURL string
 	for _, a := range rel.Assets {
-		switch {
-		case a.Name == checksumsAsset:
+		switch a.Name {
+		case checksumsAsset:
 			checksumURL = a.BrowserDownloadURL
-		case a.Name == signatureAsset:
+		case signatureAsset:
 			signatureURL = a.BrowserDownloadURL
-		case strings.HasPrefix(a.Name, expectedPrefix) && strings.HasSuffix(a.Name, expectedExt):
+		case expectedName:
 			assetURL = a.BrowserDownloadURL
 			assetName = a.Name
 		}
@@ -472,14 +479,14 @@ func RemoveStaleBinary() {
 	if runtime.GOOS != "windows" {
 		return
 	}
-	if realPath, err := currentExecutablePath(); err == nil {
+	if realPath, err := executablePath(); err == nil {
 		_ = os.Remove(realPath + ".old")
 	}
 }
 
 // ReplaceCurrentExecutable atomically updates the currently running binary.
 func ReplaceCurrentExecutable(newBinary []byte) (string, error) {
-	realPath, err := currentExecutablePath()
+	realPath, err := executablePath()
 	if err != nil {
 		return "", err
 	}
@@ -504,7 +511,7 @@ func replaceExecutable(realPath string, newBinary []byte, goos string) error {
 	tmpFile, err := os.OpenFile(filepath.Clean(tmpName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0755) //nolint:gosec // updater temp file
 	if err != nil {
 		if os.IsPermission(err) {
-			return fmt.Errorf("permission denied writing to %s (run with sudo: sudo sshx update)", dir)
+			return fmt.Errorf("permission denied writing to %s: update sshx with the tool that installed it (such as your package manager), or run `sudo sshx update`", dir)
 		}
 		return fmt.Errorf("failed to create temporary binary: %w", err)
 	}
