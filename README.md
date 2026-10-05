@@ -2,7 +2,7 @@
 
 [![Release](https://github.com/vehkiya/sshx/actions/workflows/cd.yml/badge.svg)](https://github.com/vehkiya/sshx/actions/workflows/cd.yml)
 [![CodeQL Analysis](https://github.com/vehkiya/sshx/actions/workflows/codeql.yml/badge.svg)](https://github.com/vehkiya/sshx/actions/workflows/codeql.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/vehkiya/sshx)](https://goreportcard.com/report/github.com/vehkiya/sshx)
+[![Linted with golangci-lint](https://img.shields.io/badge/linted%20with-golangci--lint-00ADD8?logo=go&logoColor=white)](https://golangci-lint.run)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **sshx** is a modern, responsive TUI SSH connection manager and OpenSSH configuration wizard built in Go with the [Charm](https://charm.sh) stack ([`bubbletea`](https://github.com/charmbracelet/bubbletea), [`huh`](https://github.com/charmbracelet/huh), and [`lipgloss`](https://github.com/charmbracelet/lipgloss)).
