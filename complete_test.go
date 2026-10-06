@@ -168,7 +168,7 @@ func TestPathSuggestions(t *testing.T) {
 		{folders, "~/projects/", []string{"~/projects/Apps/", "~/projects/keys/"}}, // no hidden folders or files
 		{folders, "~/projects/a", nil},                                             // case counts
 		{folders, "~/projects/.", []string{"~/projects/.git/"}},
-		{folders, "pro", []string{"projects" + sep}}, // relative to the current folder
+		{folders, "pro", []string{"projects/"}}, // relative to the current folder; "/" when none was typed
 		{folders, filepath.Join(home, "sr"), []string{filepath.Join(home, "src") + sep}},
 		{folders, "~/nowhere/", nil},
 		{keys, "~/", []string{"~/.ssh/", "~/projects/", "~/src/"}},
