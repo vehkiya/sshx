@@ -1,6 +1,10 @@
 package main
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 // The sshx palette, as defined in AGENTS.md.
 var (
@@ -22,6 +26,6 @@ var (
 )
 
 // badge renders a bold label on a solid background.
-func badge(text string, fg, bg lipgloss.Color) string {
+func badge(text string, fg, bg color.Color) string {
 	return lipgloss.NewStyle().Bold(true).Foreground(fg).Background(bg).Padding(0, 1).Render(text)
 }

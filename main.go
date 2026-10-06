@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // subcommands are the CLI verbs; any other first argument is treated as a host to connect to.
@@ -282,7 +282,7 @@ func checkForUpdate() int {
 
 func printUsage() {
 	header := lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("sshx — TUI SSH Connection Manager")
-	fmt.Printf("%s\n\n", header)
+	_, _ = lipgloss.Printf("%s\n\n", header)
 	fmt.Println("Usage:")
 	fmt.Println("  sshx                          Launch interactive host browser")
 	fmt.Println("  sshx <alias> [command...]     Connect to host (optionally run a remote command)")
@@ -378,7 +378,7 @@ func writeHostTable(w io.Writer, hosts []HostItem) {
 		total += wd
 	}
 
-	_, _ = fmt.Fprintln(w, render(headers, &headerStyle))
+	_, _ = lipgloss.Fprintln(w, render(headers, &headerStyle))
 	_, _ = fmt.Fprintln(w, strings.Repeat("─", total))
 	for _, r := range rows {
 		_, _ = fmt.Fprintln(w, render(r, nil))
@@ -501,9 +501,9 @@ func probeHostCLI(alias, homeDir string) int {
 
 	latency, err := probeTCP(addr, 2*time.Second)
 	if err != nil {
-		fmt.Printf("\n%s Failed to connect to %s: %v\n", badge(" UNREACHABLE ", colorWhite, colorRed), addr, err)
+		_, _ = lipgloss.Printf("\n%s Failed to connect to %s: %v\n", badge(" UNREACHABLE ", colorWhite, colorRed), addr, err)
 		return 1
 	}
-	fmt.Printf("\n%s Connected to %s in %dms\n", badge(" REACHABLE ", colorBlack, colorGreen), addr, latency.Milliseconds())
+	_, _ = lipgloss.Printf("\n%s Connected to %s in %dms\n", badge(" REACHABLE ", colorBlack, colorGreen), addr, latency.Milliseconds())
 	return 0
 }
