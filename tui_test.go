@@ -8,16 +8,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/list"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// viewOf is what the browser shows, without styling.
+func viewOf(m model) string {
+	return ansi.Strip(m.View().Content)
+}
 
 func TestModelEscHandling(t *testing.T) {
 	items := []list.Item{
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 		HostItem{Alias: "srv2", HostName: "srv2.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 
 	m := model{
@@ -26,7 +32,7 @@ func TestModelEscHandling(t *testing.T) {
 	}
 
 	// 1. Esc when unfiltered should quit
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Errorf("expected tea.Quit command on esc when unfiltered, got nil")
 	}
@@ -43,7 +49,7 @@ func TestModelEscHandling(t *testing.T) {
 
 	// 2. 'q' should quit
 	m2 := model{list: l, keys: keys}
-	updated2, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	updated2, cmd2 := m2.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if cmd2 == nil {
 		t.Errorf("expected tea.Quit command on 'q', got nil")
 	}
@@ -57,12 +63,12 @@ func TestModelKeyActions(t *testing.T) {
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 		HostItem{Alias: "srv2", HostName: "srv2.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 
 	// 1. 'e' triggers edit-host on selected item
 	m := model{list: l, keys: keys}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
 	if cmd == nil {
 		t.Errorf("expected tea.Quit command on 'e', got nil")
 	}
@@ -73,7 +79,7 @@ func TestModelKeyActions(t *testing.T) {
 
 	// 2. 'E' triggers edit-config
 	m2 := model{list: l, keys: keys}
-	updated2, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'E'}})
+	updated2, cmd2 := m2.Update(tea.KeyPressMsg{Code: 'E', Text: "E"})
 	if cmd2 == nil {
 		t.Errorf("expected tea.Quit command on 'E', got nil")
 	}
@@ -84,7 +90,7 @@ func TestModelKeyActions(t *testing.T) {
 
 	// 3. 'U' triggers upgrade
 	m3 := model{list: l, keys: keys, updateAvailable: "v0.4.0", width: 120, height: 30}
-	updated3, cmd3 := m3.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	updated3, cmd3 := m3.Update(tea.KeyPressMsg{Code: 'U', Text: "U"})
 	if cmd3 == nil {
 		t.Errorf("expected tea.Quit command on 'U', got nil")
 	}
@@ -92,8 +98,8 @@ func TestModelKeyActions(t *testing.T) {
 	if res3.action != "upgrade" {
 		t.Errorf("expected action 'upgrade', got %q", res3.action)
 	}
-	if !strings.Contains(m3.View(), "UPDATE v0.4.0 AVAILABLE") {
-		t.Errorf("expected update banner in view, got:\n%s", m3.View())
+	if !strings.Contains(viewOf(m3), "UPDATE v0.4.0 AVAILABLE") {
+		t.Errorf("expected update banner in view, got:\n%s", viewOf(m3))
 	}
 }
 
@@ -101,7 +107,7 @@ func TestModelResponsiveTabToggle(t *testing.T) {
 	items := []list.Item{
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 
 	// 1. Narrow terminal (< 100 cols): Tab toggles details view
@@ -112,20 +118,20 @@ func TestModelResponsiveTabToggle(t *testing.T) {
 		height: 24,
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	res := updated.(model)
 	if !res.showDetails {
 		t.Errorf("expected showDetails true on narrow terminal tab toggle")
 	}
 
 	// View should render details box with return hint
-	viewStr := res.View()
+	viewStr := viewOf(res)
 	if viewStr == "" {
 		t.Errorf("expected non-empty view in details mode")
 	}
 
 	// Tab again to switch back
-	updated2, _ := res.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated2, _ := res.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	res2 := updated2.(model)
 	if res2.showDetails {
 		t.Errorf("expected showDetails false after second tab")
@@ -138,12 +144,12 @@ func TestModelResponsiveTabToggle(t *testing.T) {
 		width:  120,
 		height: 30,
 	}
-	updatedWide, _ := mWide.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updatedWide, _ := mWide.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	resWide := updatedWide.(model)
 	if resWide.showDetails {
 		t.Errorf("expected showDetails false on wide screen")
 	}
-	wideView := resWide.View()
+	wideView := viewOf(resWide)
 	if wideView == "" {
 		t.Errorf("expected non-empty wide view")
 	}
@@ -154,7 +160,7 @@ func TestModelInTUIDeletion(t *testing.T) {
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 		HostItem{Alias: "srv2", HostName: "srv2.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 	m := model{
 		list: l,
@@ -162,7 +168,7 @@ func TestModelInTUIDeletion(t *testing.T) {
 	}
 
 	// 1. Press 'd': enters deletion confirmation mode without quitting
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
 	if cmd != nil {
 		t.Errorf("expected nil cmd (no quit), got %v", cmd)
 	}
@@ -172,13 +178,13 @@ func TestModelInTUIDeletion(t *testing.T) {
 	}
 
 	// View renders confirmation prompt
-	viewStr := res.View()
+	viewStr := viewOf(res)
 	if !strings.Contains(viewStr, "Delete host 'srv1'") {
 		t.Errorf("expected confirmation prompt in view, got:\n%s", viewStr)
 	}
 
 	// 2. Press 'n': cancels deletion
-	cancelled, _ := res.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	cancelled, _ := res.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	resCancelled := cancelled.(model)
 	if resCancelled.confirmDelete {
 		t.Errorf("expected confirmDelete to be false after 'n'")
@@ -192,7 +198,7 @@ func TestModelYankAndPing(t *testing.T) {
 	items := []list.Item{
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 	m := model{
 		list: l,
@@ -200,14 +206,14 @@ func TestModelYankAndPing(t *testing.T) {
 	}
 
 	// 1. Yank: 'y' sets toast status
-	updatedYank, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	updatedYank, _ := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	resYank := updatedYank.(model)
 	if !strings.Contains(resYank.statusMessage, "Copied 'ssh srv1'") {
 		t.Errorf("expected copied status message, got %q", resYank.statusMessage)
 	}
 
 	// 2. Ping: 'p' sets probing status and triggers ping command
-	updatedPing, cmdPing := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	updatedPing, cmdPing := m.Update(tea.KeyPressMsg{Code: 'p', Text: "p"})
 	if cmdPing == nil {
 		t.Errorf("expected non-nil ping command")
 	}
@@ -234,7 +240,7 @@ func TestModelRawToggle(t *testing.T) {
 			RawLines: []string{"Host srv1", "    HostName srv1.example.com"},
 		},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 	m := model{
 		list:  l,
@@ -243,20 +249,20 @@ func TestModelRawToggle(t *testing.T) {
 	}
 
 	// 'v' toggles raw view
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'v', Text: "v"})
 	res := updated.(model)
 	if !res.showRaw {
 		t.Errorf("expected showRaw true")
 	}
 
-	viewStr := res.View()
+	viewStr := viewOf(res)
 	if !strings.Contains(viewStr, "Raw OpenSSH Configuration") {
 		t.Errorf("expected Raw OpenSSH Configuration in view, got:\n%s", viewStr)
 	}
 }
 
 func TestModelEmptyState(t *testing.T) {
-	l := list.New([]list.Item{}, newCustomDelegate(), 80, 20)
+	l := list.New([]list.Item{}, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 	m := model{
 		list:   l,
@@ -265,7 +271,7 @@ func TestModelEmptyState(t *testing.T) {
 		height: 24,
 	}
 
-	viewStr := m.View()
+	viewStr := viewOf(m)
 	if !strings.Contains(viewStr, "No SSH Hosts Found") {
 		t.Errorf("expected empty state card in view, got:\n%s", viewStr)
 	}
@@ -275,7 +281,7 @@ func TestModelInTUIDeletionCtrlC(t *testing.T) {
 	items := []list.Item{
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 	m := model{
 		list: l,
@@ -283,14 +289,14 @@ func TestModelInTUIDeletionCtrlC(t *testing.T) {
 	}
 
 	// Press 'd' to enter confirmation
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
 	res := updated.(model)
 	if !res.confirmDelete {
 		t.Fatalf("expected confirmDelete to be true")
 	}
 
 	// Press 'ctrl+c' to quit
-	quitted, cmd := res.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	quitted, cmd := res.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Errorf("expected tea.Quit command on ctrl+c during confirmation")
 	}
@@ -304,7 +310,7 @@ func TestModelPingTimeout(t *testing.T) {
 	items := []list.Item{
 		HostItem{Alias: "srv1", HostName: "srv1.example.com", Port: 22},
 	}
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	keys := newListKeyMap()
 	m := model{
 		list: l,
@@ -333,7 +339,7 @@ Host test-srv
     HostName 10.0.0.1
     Port 22`
 
-	highlighted := highlightConfigBlock(raw)
+	highlighted := ansi.Strip(highlightConfigBlock(raw))
 	if !strings.Contains(highlighted, "# Top level note") {
 		t.Errorf("expected top level note in output")
 	}
@@ -370,12 +376,12 @@ func TestModelDeleteWhileFiltered(t *testing.T) {
 		items[i] = h
 	}
 
-	l := list.New(items, newCustomDelegate(), 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	l.SetFilterText("charlie")
 	m := model{list: l, keys: newListKeyMap(), homeDir: tmpDir}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	updated, _ = updated.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	res := updated.(model)
 
 	var remaining []string

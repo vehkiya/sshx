@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 const (
@@ -254,8 +254,8 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 	infoStyle := lipgloss.NewStyle().
 		Foreground(colorCyan).
 		Bold(true)
-	_, _ = fmt.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", updatedBadge, rel.TagName, path)
-	_, _ = fmt.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
+	_, _ = lipgloss.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", updatedBadge, rel.TagName, path)
+	_, _ = lipgloss.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
 	return true, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"os/user"
@@ -12,8 +13,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // Authentication strategies offered by the host wizards.
@@ -28,8 +29,13 @@ const (
 const remoteAppendKey = `exec sh -c 'umask 077; mkdir -p ~/.ssh && k=$(cat) && touch ~/.ssh/authorized_keys && { grep -qxF "$k" ~/.ssh/authorized_keys || printf "%s\n" "$k" >> ~/.ssh/authorized_keys; }'`
 
 // customHuhTheme returns an aligned Lip Gloss theme matching the sshx design system.
-func customHuhTheme() *huh.Theme {
-	t := huh.ThemeBase()
+// The palette is the same on dark and light backgrounds.
+func customHuhTheme() huh.Theme {
+	return huh.ThemeFunc(huhStyles)
+}
+
+func huhStyles(isDark bool) *huh.Styles {
+	t := huh.ThemeBase(isDark)
 
 	// Left border indicator on focused fields
 	t.Focused.Base = t.Focused.Base.BorderForeground(colorPurple)
@@ -99,8 +105,8 @@ func customHuhTheme() *huh.Theme {
 	return t
 }
 
-func renderWizardHeader(label string, fg, bg lipgloss.Color, title, desc string) {
-	fmt.Printf("\n%s%s\n%s\n\n",
+func renderWizardHeader(label string, fg, bg color.Color, title, desc string) {
+	_, _ = lipgloss.Printf("\n%s%s\n%s\n\n",
 		badge(label, fg, bg),
 		lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render(" "+title),
 		lipgloss.NewStyle().Foreground(colorDim).Render(desc),
@@ -260,7 +266,7 @@ func validatePort(s string) error {
 }
 
 // runHostForm shows the connection and authentication steps shared by all host wizards.
-func runHostForm(mode wizardMode, v *hostFormValues, theme *huh.Theme) error {
+func runHostForm(mode wizardMode, v *hostFormValues, theme huh.Theme) error {
 	text := hostFormTexts[mode]
 
 	hostInput := huh.NewInput().
@@ -384,7 +390,7 @@ func ignoreAbort(err error) error {
 }
 
 // confirm asks a yes/no question; an aborted prompt counts as "no".
-func confirm(group, title, description string, theme *huh.Theme) bool {
+func confirm(group, title, description string, theme huh.Theme) bool {
 	var ok bool
 	err := huh.NewForm(
 		huh.NewGroup(
@@ -397,7 +403,7 @@ func confirm(group, title, description string, theme *huh.Theme) bool {
 	return err == nil && ok
 }
 
-func confirmOverwrite(alias, configPath, homeDir string, theme *huh.Theme) bool {
+func confirmOverwrite(alias, configPath, homeDir string, theme huh.Theme) bool {
 	return confirm("Host Conflict Warning",
 		fmt.Sprintf("Host alias '%s' already exists in %s. Overwrite?", alias, shortenHome(configPath, homeDir)),
 		"Existing configuration for this alias will be replaced",
@@ -432,9 +438,9 @@ func printSavedCard(label, message, block string) {
 		MarginBottom(1).
 		Render(highlightConfigBlock(block))
 
-	fmt.Println()
-	fmt.Printf("%s%s\n", badge(label, colorBlack, colorGreen), lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(" "+message))
-	fmt.Println(card)
+	_, _ = lipgloss.Println()
+	_, _ = lipgloss.Printf("%s%s\n", badge(label, colorBlack, colorGreen), lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(" "+message))
+	_, _ = lipgloss.Println(card)
 }
 
 // AddHostWizard runs the interactive Huh wizard to configure and add a host.
@@ -650,12 +656,12 @@ func DeleteHostPrompt(alias, homeDir string) error {
 		return err
 	}
 
-	fmt.Printf("\n%s Removed '%s' from %s\n\n", badge(" DELETED ", colorWhite, colorCoral), alias, displayPath)
+	_, _ = lipgloss.Printf("\n%s Removed '%s' from %s\n\n", badge(" DELETED ", colorWhite, colorCoral), alias, displayPath)
 	return nil
 }
 
 // offerCopyID offers to install the host's public key on the remote server once the host is saved.
-func offerCopyID(alias, identityFile, homeDir string, theme *huh.Theme) {
+func offerCopyID(alias, identityFile, homeDir string, theme huh.Theme) {
 	if identityFile == "" {
 		return
 	}
@@ -681,7 +687,7 @@ func copyPublicKey(pubKey, alias string) error {
 	label := badge(" SSH-COPY-ID ", colorBlack, colorAmber)
 
 	if _, err := exec.LookPath("ssh-copy-id"); err == nil {
-		fmt.Printf("\n%s Running: ssh-copy-id -i %s %s\n\n", label, pubKey, alias)
+		_, _ = lipgloss.Printf("\n%s Running: ssh-copy-id -i %s %s\n\n", label, pubKey, alias)
 		cmd = exec.Command("ssh-copy-id", "-i", pubKey, alias) //nolint:gosec // intentional copy-id invocation
 		cmd.Stdin = os.Stdin
 	} else {
@@ -689,7 +695,7 @@ func copyPublicKey(pubKey, alias string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("\n%s ssh-copy-id not found; appending %s to ~/.ssh/authorized_keys on %s\n\n", label, pubKey, alias)
+		_, _ = lipgloss.Printf("\n%s ssh-copy-id not found; appending %s to ~/.ssh/authorized_keys on %s\n\n", label, pubKey, alias)
 		cmd = exec.Command("ssh", alias, remoteAppendKey) //nolint:gosec // intentional key installation over ssh
 		cmd.Stdin = bytes.NewReader(key)
 	}
@@ -700,7 +706,7 @@ func copyPublicKey(pubKey, alias string) error {
 
 // selectOrGenerateKey asks which private key the host should use, offering
 // discovered keys, a custom path, or a newly generated Ed25519 key.
-func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme *huh.Theme) (string, error) {
+func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme huh.Theme) (string, error) {
 	sshDir := filepath.Join(homeDir, ".ssh")
 	discovered, _ := DiscoverKeys(sshDir)
 	var keyOptions []huh.Option[string]
@@ -784,7 +790,7 @@ func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme *hu
 		keyPath := expandHome(strings.TrimSpace(genPath), homeDir)
 		comment := fmt.Sprintf("%s@%s", strings.TrimSpace(v.user), strings.TrimSpace(v.hostName))
 
-		fmt.Printf("\n%s Generating Ed25519 key at %s...\n\n", badge(" KEYGEN ", colorBlack, colorCyan), keyPath)
+		_, _ = lipgloss.Printf("\n%s Generating Ed25519 key at %s...\n\n", badge(" KEYGEN ", colorBlack, colorCyan), keyPath)
 		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-C", comment, "-f", keyPath) //nolint:gosec // intentional key generation
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout

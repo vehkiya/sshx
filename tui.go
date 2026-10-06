@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 var (
@@ -82,8 +82,9 @@ type customDelegate struct {
 	list.DefaultDelegate
 }
 
-func newCustomDelegate() customDelegate {
+func newCustomDelegate(isDark bool) customDelegate {
 	d := list.NewDefaultDelegate()
+	d.Styles = list.NewDefaultItemStyles(isDark)
 	d.Styles.SelectedTitle = d.Styles.SelectedTitle.
 		Foreground(colorCoral).
 		BorderLeftForeground(colorPurple).
@@ -92,6 +93,15 @@ func newCustomDelegate() customDelegate {
 		Foreground(colorWhite).
 		BorderLeftForeground(colorPurple)
 	return customDelegate{DefaultDelegate: d}
+}
+
+// styleList gives the host list the sshx palette over the defaults for a dark
+// or light terminal. It starts dark and changes once the terminal says
+// otherwise (tea.BackgroundColorMsg).
+func styleList(l *list.Model, isDark bool) {
+	l.SetDelegate(newCustomDelegate(isDark))
+	l.Styles = list.DefaultStyles(isDark)
+	l.Styles.Title = titleStyle
 }
 
 // copyToClipboard copies text to the system clipboard via OSC 52 and CLI tools.
@@ -279,8 +289,9 @@ type model struct {
 	homeDir         string
 }
 
+// Init asks for the terminal's background color and checks for a newer release.
 func (m model) Init() tea.Cmd {
-	return checkUpdateCmd(Version, m.homeDir)
+	return tea.Batch(tea.RequestBackgroundColor, checkUpdateCmd(Version, m.homeDir))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -322,7 +333,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMessage = ""
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.BackgroundColorMsg:
+		styleList(&m.list, msg.IsDark())
+		return m, nil
+
+	case tea.KeyPressMsg:
 		if m.confirmDelete {
 			switch msg.String() {
 			case "y", "Y":
@@ -450,7 +465,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m model) View() string {
+// View draws the browser on the alternate screen.
+func (m model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+func (m model) render() string {
 	if m.quitting {
 		return ""
 	}
@@ -687,10 +709,9 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 		}
 	}
 
-	delegate := newCustomDelegate()
-	l := list.New(items, delegate, 80, 20)
+	l := list.New(items, newCustomDelegate(true), 80, 20)
 	l.Title = "sshx"
-	l.Styles.Title = titleStyle
+	styleList(&l, true)
 
 	keys := newListKeyMap()
 	l.AdditionalShortHelpKeys = func() []key.Binding {
@@ -716,7 +737,7 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 		pingStatus: make(map[string]string),
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
 	if err != nil {
 		return "", "", err

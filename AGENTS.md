@@ -44,7 +44,7 @@ Before committing or submitting changes, all of the following steps **MUST** pas
 
 ### 2.1 Zero External Runtime Dependencies
 * `sshx` compiles down to a single static binary.
-* Rely exclusively on the standard library and the official Charm libraries (`bubbletea`, `bubbles`, `huh`, `lipgloss`).
+* Rely exclusively on the standard library and the official Charm libraries (`bubbletea`, `bubbles`, `huh`, `lipgloss`, all v2 from `charm.land`).
 * Do not introduce heavy ORMs, dynamic runtime dependencies, or CGO.
 
 ### 2.2 Security & SSH Config Integrity
@@ -62,6 +62,7 @@ Before committing or submitting changes, all of the following steps **MUST** pas
   * **Success / Badges**: Spring Green (`#5FD787`)
   * **Warnings / Password**: Amber (`#FFAF00`)
 * Both the split-pane host browser TUI and the interactive Huh forms must adhere to this cohesive visual aesthetic.
+* Print styled text with `lipgloss.Printf`, `lipgloss.Println` or `lipgloss.Fprint*`, not `fmt`. Lip Gloss v2 always styles for a full-color terminal; its print functions drop what the output can't show, so pipes and files get plain text.
 
 ### 2.4 Dual Invocation Modes
 * `sshx` provides both an interactive terminal UI (`sshx`) and direct non-interactive CLI subcommands (`sshx <alias>`, `sshx add`, `sshx rm`, `sshx ls`, `sshx edit`).
