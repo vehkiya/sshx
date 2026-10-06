@@ -575,6 +575,23 @@ func (w *hostWizard) generateKey() error {
 	return nil
 }
 
+// generatedKey is the key generateKey created for the answers, expanded, or
+// "" when the answers didn't ask for a new key.
+func (w *hostWizard) generatedKey() string {
+	if w.auth != authKey || w.keyChoice != keyGenerate {
+		return ""
+	}
+	return w.identityFile()
+}
+
+// offerKeychain helps ssh use a key the wizard generated without asking for
+// its passphrase on every connection to alias (rememberPassphrase).
+func (w *hostWizard) offerKeychain(alias string, theme huh.Theme) {
+	rememberPassphrase(os.Stdout, w.generatedKey(), alias, w.homeDir, func(title, description string) bool {
+		return confirm("Keychain", title, description, theme)
+	})
+}
+
 // buildEntry turns form values into a HostEntry. When prev is given and the
 // authentication method is unchanged, prev's authentication settings are kept
 // so an edit only rewrites what the user actually changed.
@@ -746,6 +763,7 @@ func AddHostWizard(posTarget, posAlias, homeDir string, promptConnect bool) (ali
 	printSavedCard("✔ SAVED", fmt.Sprintf("Successfully written to %s", shortenHome(configPath, homeDir)), entry.Format())
 
 	alias = primaryAlias(entry.Alias)
+	w.offerKeychain(alias, theme)
 	offerCopyID(alias, entry.IdentityFile, homeDir, theme)
 
 	if promptConnect && confirm("Quick Connect",
@@ -820,6 +838,7 @@ func EditHostWizard(alias, homeDir string) (string, error) {
 
 	newAlias := primaryAlias(next.Alias)
 	printSavedCard("✔ UPDATED", fmt.Sprintf("Successfully updated %s in %s", newAlias, shortenHome(configPath, homeDir)), hostSection(updated, newAlias))
+	w.offerKeychain(newAlias, theme)
 	offerCopyID(newAlias, next.IdentityFile, homeDir, theme)
 
 	return newAlias, nil
@@ -879,6 +898,7 @@ func CloneHostWizard(alias, homeDir string) (string, error) {
 
 	newAlias := primaryAlias(next.Alias)
 	printSavedCard("✔ CLONED", fmt.Sprintf("Successfully created %s in %s", newAlias, shortenHome(configPath, homeDir)), block)
+	w.offerKeychain(newAlias, theme)
 	offerCopyID(newAlias, next.IdentityFile, homeDir, theme)
 
 	return newAlias, nil

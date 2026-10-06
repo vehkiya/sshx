@@ -23,6 +23,7 @@ It provides an intuitive dual-pane terminal interface to search, inspect, connec
   * Automated private key discovery from `~/.ssh`.
   * Path completion in the custom key and new key inputs: <kbd>Tab</kbd> accepts the suggestion shown (keys and folders, starting with `~/.ssh/`).
   * On-the-fly Ed25519 key generation (`ssh-keygen`) with automated comment tagging.
+  * Remembering a new key's passphrase: on macOS with Apple's `ssh`, sshx offers to run `ssh-add --apple-use-keychain <key>`, which asks for the passphrase once more, keeps it in the login Keychain and loads the key into the agent. If `~/.ssh/config` doesn't set `UseKeychain yes` and `AddKeysToAgent yes` for the host, sshx says to add them under `Host *`, so ssh still finds the passphrase after you log in again. Elsewhere (or with another `ssh`, such as Homebrew's, which has no Keychain support) it suggests `ssh-add <key>`.
   * One-click public key deployment to remote hosts via `ssh-copy-id`.
   * Real-time syntax-colored preview card of the generated SSH configuration block.
 * **Strict OpenSSH File Integrity**:
