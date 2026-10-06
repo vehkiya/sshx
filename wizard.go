@@ -749,41 +749,14 @@ func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme huh
 	switch selectedKey {
 	case "custom":
 		var customPath string
-		formCustom := huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Private Key Path").
-					Description("Path to your private key file").
-					Placeholder("~/.ssh/id_custom").
-					Value(&customPath).
-					Validate(func(s string) error {
-						exp := expandHome(strings.TrimSpace(s), homeDir)
-						if _, err := os.Stat(exp); err != nil {
-							return fmt.Errorf("file does not exist: %s", exp)
-						}
-						return nil
-					}),
-			).Title("Custom Key Path").Description("Specify the absolute or ~-relative path to your key"),
-		).WithTheme(theme)
-
-		if err := formCustom.Run(); err != nil {
+		if err := customKeyForm(homeDir, &customPath, theme).Run(); err != nil {
 			return "", err
 		}
 		return expandHome(strings.TrimSpace(customPath), homeDir), nil
 
 	case "generate":
 		genPath := shortenHome(filepath.Join(sshDir, "id_ed25519_"+primaryAlias(v.alias)), homeDir)
-
-		formGen := huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("New Key File Path").
-					Description("Path where the new Ed25519 key will be created").
-					Value(&genPath),
-			).Title("Generate Ed25519 Key").Description("New high-security elliptic curve key pair"),
-		).WithTheme(theme)
-
-		if err := formGen.Run(); err != nil {
+		if err := generateKeyForm(homeDir, &genPath, theme).Run(); err != nil {
 			return "", err
 		}
 
@@ -807,4 +780,38 @@ func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme huh
 	default:
 		return selectedKey, nil
 	}
+}
+
+// customKeyForm asks for the path of an existing private key, completing
+// key files and folders as it's typed.
+func customKeyForm(homeDir string, path *string, theme huh.Theme) *huh.Form {
+	in := huh.NewInput().
+		Title("Private Key Path").
+		Description("Path to your private key file").
+		Placeholder("~/.ssh/id_custom").
+		Value(path).
+		Validate(func(s string) error {
+			exp := expandHome(strings.TrimSpace(s), homeDir)
+			if _, err := os.Stat(exp); err != nil {
+				return fmt.Errorf("file does not exist: %s", exp)
+			}
+			return nil
+		})
+	form := huh.NewForm(
+		huh.NewGroup(in).Title("Custom Key Path").Description("Specify the absolute or ~-relative path to your key"),
+	).WithTheme(theme)
+	return completePathForm(form, in, path, newPathCompleter(homeDir, true))
+}
+
+// generateKeyForm asks where to create a new key, completing folders as
+// it's typed.
+func generateKeyForm(homeDir string, path *string, theme huh.Theme) *huh.Form {
+	in := huh.NewInput().
+		Title("New Key File Path").
+		Description("Path where the new Ed25519 key will be created").
+		Value(path)
+	form := huh.NewForm(
+		huh.NewGroup(in).Title("Generate Ed25519 Key").Description("New high-security elliptic curve key pair"),
+	).WithTheme(theme)
+	return completePathForm(form, in, path, newPathCompleter(homeDir, false))
 }
