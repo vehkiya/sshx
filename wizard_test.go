@@ -20,7 +20,7 @@ func TestBuildEntryUnchangedFormIsNoOp(t *testing.T) {
 	for _, prev := range tests {
 		identity := ""
 		if authMethodOf(prev) == authKey {
-			// selectOrGenerateKey returns the expanded path of the current key.
+			// hostWizard.identityFile returns the expanded path of the current key.
 			identity = expandHome(prev.IdentityFile, home)
 		}
 		got := buildEntry(formValuesFromEntry(prev), identity, home, &prev)

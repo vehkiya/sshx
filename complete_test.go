@@ -16,13 +16,18 @@ import (
 )
 
 // formDriver feeds keys to a Huh form the way a terminal would, running the
-// commands each key returns.
+// commands each key returns so focus moves as it does for real.
 type formDriver struct {
+	t    *testing.T
 	form *huh.Form
+	// filter sees every message before the form, as the wizard's
+	// tea.WithFilter does when it runs in a terminal.
+	filter func(tea.Model, tea.Msg) tea.Msg
 }
 
-func newFormDriver(form *huh.Form) *formDriver {
-	d := &formDriver{form: form}
+func newFormDriver(t *testing.T, form *huh.Form, filter func(tea.Model, tea.Msg) tea.Msg) *formDriver {
+	t.Helper()
+	d := &formDriver{t: t, form: form, filter: filter}
 	d.feed(form.Init())
 	return d
 }
@@ -32,6 +37,9 @@ func (d *formDriver) feed(cmd tea.Cmd) {
 	for i := 0; len(queue) > 0 && i < 200; i++ {
 		msg := queue[0]
 		queue = queue[1:]
+		if d.filter != nil {
+			msg = d.filter(nil, msg) // the wizard's filter doesn't look at the model
+		}
 		model, next := d.form.Update(msg)
 		d.form = model.(*huh.Form)
 		queue = append(queue, runCmd(next)...)
@@ -79,8 +87,46 @@ func (d *formDriver) press(code rune, mod ...tea.KeyMod) {
 	d.feed(func() tea.Msg { return k })
 }
 
+func (d *formDriver) focused() string {
+	if f := d.form.GetFocusedField(); f != nil {
+		return f.GetKey()
+	}
+	return ""
+}
+
+// advanceTo presses Enter until the form is on the field with the given key.
+func (d *formDriver) advanceTo(key string) {
+	d.t.Helper()
+	for i := 0; i < 20 && d.focused() != key; i++ {
+		d.press(tea.KeyEnter)
+	}
+	if got := d.focused(); got != key {
+		d.t.Fatalf("pressing Enter never reached %q; focus is on %q", key, got)
+	}
+}
+
+// backTo presses Shift+Tab until the form is on the field with the given key.
+func (d *formDriver) backTo(key string) {
+	d.t.Helper()
+	for i := 0; i < 20 && d.focused() != key; i++ {
+		d.press(tea.KeyTab, tea.ModShift)
+	}
+	if got := d.focused(); got != key {
+		d.t.Fatalf("pressing Shift+Tab never reached %q; focus is on %q", key, got)
+	}
+}
+
+// choose picks the option n places below the current one in a select.
+func (d *formDriver) choose(n int) {
+	for range n {
+		d.press(tea.KeyDown)
+	}
+	d.press(tea.KeyEnter)
+}
+
+// view is what the form shows on a tall terminal, without styling.
 func (d *formDriver) view() string {
-	d.feed(func() tea.Msg { return tea.WindowSizeMsg{Width: 100, Height: 30} })
+	d.feed(func() tea.Msg { return tea.WindowSizeMsg{Width: 100, Height: 60} })
 	return ansi.Strip(d.form.View())
 }
 
@@ -104,43 +150,44 @@ func keyHome(t *testing.T) string {
 }
 
 func TestCustomKeyPathCompletes(t *testing.T) {
-	home := keyHome(t)
-	var path string
-	d := newFormDriver(customKeyForm(home, &path, customHuhTheme()))
+	w, d := newTestWizard(t, wizardAdd, keyHome(t), "")
+	d.advanceTo("key")
+	d.choose(2) // id_ed25519_lab, id_ed25519_work, Custom key path...
+	if d.focused() != "custom-key" {
+		t.Fatalf("choosing a custom key leads to %q, want its page", d.focused())
+	}
 
-	// Tab accepts the first matching key and stays in the form.
+	// Tab accepts the first matching key and stays on the page.
 	d.typeText("~/.ssh/id_")
 	d.press(tea.KeyTab)
-	if path != "~/.ssh/id_ed25519_lab" || d.form.State != huh.StateNormal {
-		t.Fatalf("~/.ssh/id_ + Tab: %q, state %v; want ~/.ssh/id_ed25519_lab, still asking", path, d.form.State)
+	if w.customKey != "~/.ssh/id_ed25519_lab" || d.focused() != "custom-key" {
+		t.Fatalf("~/.ssh/id_ + Tab: %q, focus on %q; want ~/.ssh/id_ed25519_lab, still asking", w.customKey, d.focused())
 	}
 	if view := d.view(); !strings.Contains(view, "tab complete") {
 		t.Errorf("the help doesn't say Tab completes:\n%s", view)
 	}
-	// With nothing left to complete, Tab does nothing, as before, and Enter submits.
+	// With nothing left to complete, Tab moves on, as it does in any other input.
 	d.press(tea.KeyTab)
-	if path != "~/.ssh/id_ed25519_lab" || d.form.State != huh.StateNormal {
-		t.Errorf("Tab on a complete path: %q, state %v; want it unchanged, still asking", path, d.form.State)
-	}
-	d.press(tea.KeyEnter)
-	if d.form.State != huh.StateCompleted {
-		t.Errorf("Enter: state %v, want completed", d.form.State)
+	if w.customKey != "~/.ssh/id_ed25519_lab" || d.focused() != "save" {
+		t.Errorf("Tab on a complete path: %q, focus on %q; want it unchanged, then the Save page", w.customKey, d.focused())
 	}
 }
 
 func TestNewKeyPathCompletesFolders(t *testing.T) {
-	home := keyHome(t)
-	path := "~/.ssh/id_ed25519_x"
-	d := newFormDriver(generateKeyForm(home, &path, customHuhTheme()))
-	d.press('u', tea.ModCtrl) // clear the suggested path
+	w, d := newTestWizard(t, wizardAdd, keyHome(t), "")
+	d.advanceTo("key")
+	d.choose(3) // id_ed25519_lab, id_ed25519_work, Custom key path..., Generate
+	if d.focused() != "new-key" {
+		t.Fatalf("choosing to generate a key leads to %q, want its page", d.focused())
+	}
 	d.typeText("~/pro")
 	d.press(tea.KeyTab)
-	if path != "~/projects/" {
-		t.Fatalf("~/pro + Tab = %q, want ~/projects/", path)
+	if w.newKey != "~/projects/" {
+		t.Fatalf("~/pro + Tab = %q, want ~/projects/", w.newKey)
 	}
 	d.press(tea.KeyTab)
-	if path != "~/projects/keys/" {
-		t.Errorf("~/projects/ + Tab = %q, want ~/projects/keys/", path)
+	if w.newKey != "~/projects/keys/" {
+		t.Errorf("~/projects/ + Tab = %q, want ~/projects/keys/", w.newKey)
 	}
 }
 

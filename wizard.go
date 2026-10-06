@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"image/color"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"unicode"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -106,10 +109,12 @@ func huhStyles(isDark bool) *huh.Styles {
 }
 
 func renderWizardHeader(label string, fg, bg color.Color, title, desc string) {
-	_, _ = lipgloss.Printf("\n%s%s\n%s\n\n",
+	dim := lipgloss.NewStyle().Foreground(colorDim)
+	_, _ = lipgloss.Printf("\n%s%s\n%s\n%s\n\n",
 		badge(label, fg, bg),
 		lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render(" "+title),
-		lipgloss.NewStyle().Foreground(colorDim).Render(desc),
+		dim.Render(desc),
+		dim.Render("Shift+Tab goes back · Esc cancels without saving"),
 	)
 }
 
@@ -265,50 +270,173 @@ func validatePort(s string) error {
 	return nil
 }
 
-// runHostForm shows the connection and authentication steps shared by all host wizards.
-func runHostForm(mode wizardMode, v *hostFormValues, theme huh.Theme) error {
-	text := hostFormTexts[mode]
+// Choices in the wizard's key step that aren't key paths.
+const (
+	keyCustom   = "custom"
+	keyGenerate = "generate"
+)
 
-	hostInput := huh.NewInput().
+// hostWizard holds the answers of the add, edit and clone wizards while they
+// run. Later pages read them, so they follow earlier answers even after going
+// back.
+type hostWizard struct {
+	hostFormValues
+	mode    wizardMode
+	homeDir string
+
+	keyChoice  string // a choice above, or a key's path
+	customKey  string // the existing key typed for keyCustom
+	newKey     string // where keyGenerate creates the key; empty for defaultNewKey
+	keyOptions []huh.Option[string]
+	save       bool
+
+	goingBack bool // the last key pressed moves back a page (trackDirection)
+
+	form        *huh.Form             // the wizard, for which field has focus
+	completions map[string]completion // the inputs that complete paths, by field key
+}
+
+// newHostWizard prepares the wizard's answers from v. currentKey is the
+// host's IdentityFile, offered first in the key step.
+func newHostWizard(mode wizardMode, v hostFormValues, homeDir, currentKey string) *hostWizard {
+	w := &hostWizard{hostFormValues: v, mode: mode, homeDir: homeDir, save: true}
+
+	discovered, _ := DiscoverKeys(filepath.Join(homeDir, ".ssh"))
+	if currentKey != "" {
+		w.keyChoice = expandHome(currentKey, homeDir)
+		w.keyOptions = append(w.keyOptions, huh.NewOption(shortenHome(w.keyChoice, homeDir)+" (Current)", w.keyChoice))
+	}
+	for _, k := range discovered {
+		if k != w.keyChoice {
+			w.keyOptions = append(w.keyOptions, huh.NewOption(shortenHome(k, homeDir), k))
+		}
+	}
+	// The choices are the same whatever the earlier answers are: when a
+	// select's options change, Huh keeps the cursor where it was, which would
+	// quietly answer with whichever option took the chosen one's place.
+	w.keyOptions = append(w.keyOptions,
+		huh.NewOption("Custom key path...", keyCustom),
+		huh.NewOption("Generate new Ed25519 key on the fly...", keyGenerate),
+	)
+	switch {
+	case w.keyChoice != "":
+	case len(discovered) > 0:
+		w.keyChoice = discovered[0]
+	default:
+		w.keyChoice = keyGenerate
+	}
+	return w
+}
+
+// filter sees every message before the wizard does: Tab accepts a path
+// suggestion, and the direction the user moves in is noted.
+func (w *hostWizard) filter(_ tea.Model, msg tea.Msg) tea.Msg {
+	msg = w.completeOnTab(msg)
+	w.trackDirection(msg)
+	return msg
+}
+
+// trackDirection notes, for every message the form gets, whether the user
+// is moving back.
+func (w *hostWizard) trackDirection(msg tea.Msg) {
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		w.goingBack = key.Matches(k, formKeyMap().Input.Prev)
+	}
+}
+
+// forward makes a field's check apply only when the user moves on. Huh
+// checks a field again as it loses focus, and won't leave a page holding an
+// error in either direction, so a half-typed answer would otherwise trap the
+// user on its page. Moving on still needs a valid answer, and the Save button
+// checks every page once more (checkAnswers), in case a page left with a bad
+// answer isn't passed again.
+func forward[T any](w *hostWizard, check func(T) error) func(T) error {
+	return func(v T) error {
+		if w.goingBack {
+			return nil
+		}
+		return check(v)
+	}
+}
+
+// formKeyMap is Huh's keymap with Esc as well as Ctrl+C cancelling. Select
+// filtering is off, as Esc would otherwise also clear a filter.
+func formKeyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"), key.WithHelp("esc", "cancel"))
+	// The wizard's filter turns Tab into Ctrl+E while a suggestion shows
+	// (completeOnTab), so that's the key to show.
+	km.Input.AcceptSuggestion.SetHelp("tab", "complete")
+	km.Select.Filter.SetEnabled(false)
+	km.MultiSelect.Filter.SetEnabled(false)
+	return km
+}
+
+// newForm puts the wizard's pages into one form, so Shift+Tab goes back to
+// any earlier page and Esc cancels from any of them. The key pages show only
+// when the answers before them ask for a key.
+func (w *hostWizard) newForm(theme huh.Theme) *huh.Form {
+	text := hostFormTexts[w.mode]
+
+	hostInput := huh.NewInput().Key("hostname").
 		Title("HostName / IP").
 		Description(text.hostDesc).
 		Placeholder(text.hostPlaceholder).
-		Value(&v.hostName).
-		Validate(validateHostName)
-	aliasInput := huh.NewInput().
+		Value(&w.hostName).
+		Validate(forward(w, validateHostName))
+	aliasInput := huh.NewInput().Key("alias").
 		Title(text.aliasTitle).
 		Description(text.aliasDesc).
 		Placeholder(text.aliasPlaceholder).
-		Value(&v.alias).
-		Validate(validateAlias)
-	userInput := huh.NewInput().
+		Value(&w.alias).
+		Validate(forward(w, validateAlias))
+	userInput := huh.NewInput().Key("user").
 		Title("User").
 		Description("Remote login username").
 		Placeholder(currentUsername()).
-		Value(&v.user).
-		Validate(validateText)
-	portInput := huh.NewInput().
+		Value(&w.user).
+		Validate(forward(w, validateText))
+	portInput := huh.NewInput().Key("port").
 		Title("Port").
 		Description("SSH port (standard is 22)").
 		Placeholder("22").
-		Value(&v.port).
-		Validate(validatePort)
-	proxyInput := huh.NewInput().
+		Value(&w.port).
+		Validate(forward(w, validatePort))
+	proxyInput := huh.NewInput().Key("proxyjump").
 		Title("ProxyJump").
 		Description("Optional jump host or bastion (e.g. bastion.lan)").
 		Placeholder("leave blank for direct connection").
-		Value(&v.proxyJump).
-		Validate(validateText)
+		Value(&w.proxyJump).
+		Validate(forward(w, validateText))
 
 	fields := []huh.Field{hostInput, aliasInput, userInput, portInput, proxyInput}
-	if mode == wizardClone {
+	if w.mode == wizardClone {
 		fields[0], fields[1] = aliasInput, hostInput
 	}
 
-	return huh.NewForm(
+	customKeyInput := w.completePaths(huh.NewInput().Key("custom-key").
+		Title("Private Key Path").
+		Description("Path to your private key file").
+		Placeholder("~/.ssh/id_custom").
+		Value(&w.customKey).
+		Validate(forward(w, w.checkKeyFile)),
+		&w.customKey, newPathCompleter(w.homeDir, true))
+	// The default path follows the alias, even after going back to change
+	// it; the placeholder is bound to the alias alone.
+	newKeyInput := w.completePaths(huh.NewInput().Key("new-key").
+		Title("New Key File Path").
+		Description("Path where the new Ed25519 key will be created; leave empty for the one shown").
+		PlaceholderFunc(w.defaultNewKey, &w.alias).
+		Value(&w.newKey).
+		Validate(forward(w, validateText)),
+		&w.newKey, newPathCompleter(w.homeDir, false))
+
+	noKey := func() bool { return w.auth != authKey }
+
+	w.form = huh.NewForm(
 		huh.NewGroup(fields...).Title(text.step).Description(text.stepDesc),
 		huh.NewGroup(
-			huh.NewSelect[string]().
+			huh.NewSelect[string]().Key("auth").
 				Title("Authentication Method").
 				Description("Choose how you connect to this server").
 				Options(
@@ -316,9 +444,135 @@ func runHostForm(mode wizardMode, v *hostFormValues, theme huh.Theme) error {
 					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", authPassword),
 					huh.NewOption("Standard / Default (agent keys with password fallback)", authDefault),
 				).
-				Value(&v.auth),
+				Value(&w.auth),
 		).Title("Step 2: Authentication").Description(text.authDesc),
-	).WithTheme(theme).Run()
+		huh.NewGroup(
+			huh.NewSelect[string]().Key("key").
+				Title("Select Private Key").
+				Description("Choose an existing key in ~/.ssh or generate a new one").
+				Options(w.keyOptions...).
+				Value(&w.keyChoice),
+		).Title("Step 3: Private Key Selection").Description("Select which SSH key to use for authentication").
+			WithHideFunc(noKey),
+		huh.NewGroup(customKeyInput).
+			Title("Custom Key Path").Description("Specify the absolute or ~-relative path to your key").
+			WithHideFunc(func() bool { return noKey() || w.keyChoice != keyCustom }),
+		huh.NewGroup(newKeyInput).
+			Title("Generate Ed25519 Key").Description("New high-security elliptic curve key pair, created once you save").
+			WithHideFunc(func() bool { return noKey() || w.keyChoice != keyGenerate }),
+		huh.NewGroup(
+			huh.NewConfirm().Key("save").
+				Title("Save this host?").
+				Description("Nothing is written until you save").
+				Affirmative("Save").Negative("Cancel").
+				Value(&w.save).
+				Validate(forward(w, func(save bool) error {
+					if !save {
+						return nil
+					}
+					return w.checkAnswers()
+				})),
+		).Title("Step 4: Save"),
+	).WithTheme(theme).WithKeyMap(formKeyMap()).WithProgramOptions(tea.WithFilter(w.filter))
+	return w.form
+}
+
+// run asks every page; choosing Cancel on the last page counts as
+// cancelling, like Esc.
+func (w *hostWizard) run(theme huh.Theme) error {
+	if err := w.newForm(theme).Run(); err != nil {
+		return err
+	}
+	if !w.save {
+		return huh.ErrUserAborted
+	}
+	return nil
+}
+
+// checkKeyFile checks a typed private key path.
+func (w *hostWizard) checkKeyFile(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return errors.New("enter the path of your private key")
+	}
+	exp := expandHome(s, w.homeDir)
+	if _, err := os.Stat(exp); err != nil {
+		return fmt.Errorf("file does not exist: %s", exp)
+	}
+	return nil
+}
+
+// checkAnswers checks every page that's showing once more before saving.
+// The pages check their answers only when the user moves on, so one left by
+// going back could still hold a bad answer.
+func (w *hostWizard) checkAnswers() error {
+	checks := []struct {
+		page string
+		show bool
+		err  func() error
+	}{
+		{"HostName / IP", true, func() error { return validateHostName(w.hostName) }},
+		{hostFormTexts[w.mode].aliasTitle, true, func() error { return validateAlias(w.alias) }},
+		{"User", true, func() error { return validateText(w.user) }},
+		{"Port", true, func() error { return validatePort(w.port) }},
+		{"ProxyJump", true, func() error { return validateText(w.proxyJump) }},
+		{"Private Key Path", w.auth == authKey && w.keyChoice == keyCustom, func() error { return w.checkKeyFile(w.customKey) }},
+		{"New Key File Path", w.auth == authKey && w.keyChoice == keyGenerate, func() error { return validateText(w.newKey) }},
+	}
+	for _, c := range checks {
+		if !c.show {
+			continue
+		}
+		if err := c.err(); err != nil {
+			return fmt.Errorf("%s: %w. Go back with Shift+Tab to fix it", c.page, err)
+		}
+	}
+	return nil
+}
+
+// defaultNewKey is where a generated key goes unless another path is typed:
+// ~/.ssh/id_ed25519_<alias>.
+func (w *hostWizard) defaultNewKey() string {
+	return shortenHome(filepath.Join(w.homeDir, ".ssh", "id_ed25519_"+primaryAlias(w.alias)), w.homeDir)
+}
+
+// identityFile is the private key the answers chose, expanded, or "" when the
+// host doesn't use one. A key to generate doesn't exist until generateKey.
+func (w *hostWizard) identityFile() string {
+	if w.auth != authKey {
+		return ""
+	}
+	switch w.keyChoice {
+	case keyCustom:
+		return expandHome(strings.TrimSpace(w.customKey), w.homeDir)
+	case keyGenerate:
+		return expandHome(cmp.Or(strings.TrimSpace(w.newKey), w.defaultNewKey()), w.homeDir)
+	}
+	return w.keyChoice
+}
+
+// generateKey creates the Ed25519 key the answers asked for, if any. It runs
+// only once the host is about to be written, so cancelling creates no key.
+func (w *hostWizard) generateKey() error {
+	if w.auth != authKey || w.keyChoice != keyGenerate {
+		return nil
+	}
+	keyPath := w.identityFile()
+	comment := fmt.Sprintf("%s@%s", strings.TrimSpace(w.user), strings.TrimSpace(w.hostName))
+
+	_, _ = lipgloss.Printf("\n%s Generating Ed25519 key at %s...\n\n", badge(" KEYGEN ", colorBlack, colorCyan), keyPath)
+	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-C", comment, "-f", keyPath) //nolint:gosec // intentional key generation
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// ssh-keygen also exits non-zero when the user declines to overwrite an existing key,
+		// in which case that key is still usable.
+		if _, statErr := os.Stat(keyPath); statErr != nil {
+			return fmt.Errorf("ssh-keygen failed: %w", err)
+		}
+	}
+	return nil
 }
 
 // buildEntry turns form values into a HostEntry. When prev is given and the
@@ -381,12 +635,18 @@ func currentUsername() string {
 	return ""
 }
 
-// ignoreAbort treats a cancelled form as a clean exit.
+// ignoreAbort treats a cancelled wizard as a clean exit, saying nothing changed.
 func ignoreAbort(err error) error {
 	if errors.Is(err, huh.ErrUserAborted) {
+		printCancelled()
 		return nil
 	}
 	return err
+}
+
+// printCancelled notes that a wizard was cancelled before writing anything.
+func printCancelled() {
+	_, _ = lipgloss.Printf("\n%s\n\n", lipgloss.NewStyle().Foreground(colorDim).Render("Cancelled. Nothing was changed."))
 }
 
 // confirm asks a yes/no question; an aborted prompt counts as "no".
@@ -399,7 +659,7 @@ func confirm(group, title, description string, theme huh.Theme) bool {
 				Description(description).
 				Value(&ok),
 		).Title(group),
-	).WithTheme(theme).Run()
+	).WithTheme(theme).WithKeyMap(formKeyMap()).Run()
 	return err == nil && ok
 }
 
@@ -461,24 +721,22 @@ func AddHostWizard(posTarget, posAlias, homeDir string, promptConnect bool) (ali
 	}
 
 	theme := customHuhTheme()
-	if err := runHostForm(wizardAdd, &v, theme); err != nil {
+	w := newHostWizard(wizardAdd, v, homeDir, "")
+	if err := w.run(theme); err != nil {
 		return "", false, ignoreAbort(err)
 	}
-
-	identityFile := ""
-	if v.auth == authKey {
-		if identityFile, err = selectOrGenerateKey(homeDir, "", v, theme); err != nil {
-			return "", false, ignoreAbort(err)
-		}
-	}
-	entry := buildEntry(v, identityFile, homeDir, nil)
+	entry := buildEntry(w.hostFormValues, w.identityFile(), homeDir, nil)
 
 	configPath := filepath.Join(homeDir, ".ssh", "config")
 	if owner, ok := FindAliasOwner(homeDir, entry.Alias, "", ""); ok {
 		if !confirmOverwrite(entry.Alias, owner, homeDir, theme) {
+			printCancelled()
 			return "", false, nil
 		}
 		configPath = owner
+	}
+	if err := w.generateKey(); err != nil {
+		return "", false, err
 	}
 
 	content := InsertHost(RemoveHost(readConfig(configPath), entry.Alias), entry.Format())
@@ -516,17 +774,11 @@ func EditHostWizard(alias, homeDir string) (string, error) {
 	prev := target.Entry()
 	v := formValuesFromEntry(prev)
 	theme := customHuhTheme()
-	if err := runHostForm(wizardEdit, &v, theme); err != nil {
+	w := newHostWizard(wizardEdit, v, homeDir, prev.IdentityFile)
+	if err := w.run(theme); err != nil {
 		return "", ignoreAbort(err)
 	}
-
-	identityFile := ""
-	if v.auth == authKey {
-		if identityFile, err = selectOrGenerateKey(homeDir, prev.IdentityFile, v, theme); err != nil {
-			return "", ignoreAbort(err)
-		}
-	}
-	next := buildEntry(v, identityFile, homeDir, &prev)
+	next := buildEntry(w.hostFormValues, w.identityFile(), homeDir, &prev)
 
 	configPath := target.ConfigFile
 	if configPath == "" {
@@ -534,15 +786,18 @@ func EditHostWizard(alias, homeDir string) (string, error) {
 	}
 	content := readConfig(configPath)
 
+	// The host this one replaces, when it's defined in another file.
+	replacedIn := ""
 	if !strings.EqualFold(next.Alias, prev.Alias) {
 		if owner, ok := FindAliasOwner(homeDir, next.Alias, configPath, prev.Alias); ok {
 			if !confirmOverwrite(next.Alias, owner, homeDir, theme) {
+				printCancelled()
 				return "", nil
 			}
 			if owner == configPath {
 				content = RemoveHost(content, next.Alias)
-			} else if err := DeleteHostFromConfigFile(next.Alias, owner); err != nil {
-				return "", err
+			} else {
+				replacedIn = owner
 			}
 		}
 	}
@@ -550,6 +805,14 @@ func EditHostWizard(alias, homeDir string) (string, error) {
 	updated, err := UpdateHost(content, prev.Alias, prev, next)
 	if err != nil {
 		return "", err
+	}
+	if err := w.generateKey(); err != nil {
+		return "", err
+	}
+	if replacedIn != "" {
+		if err := DeleteHostFromConfigFile(next.Alias, replacedIn); err != nil {
+			return "", err
+		}
 	}
 	if err := WriteConfigFile(configPath, []byte(updated)); err != nil {
 		return "", fmt.Errorf("failed writing to %s: %w", configPath, err)
@@ -580,17 +843,11 @@ func CloneHostWizard(alias, homeDir string) (string, error) {
 	v := formValuesFromEntry(prev)
 	v.alias = source.Alias + "-clone"
 	theme := customHuhTheme()
-	if err := runHostForm(wizardClone, &v, theme); err != nil {
+	w := newHostWizard(wizardClone, v, homeDir, prev.IdentityFile)
+	if err := w.run(theme); err != nil {
 		return "", ignoreAbort(err)
 	}
-
-	identityFile := ""
-	if v.auth == authKey {
-		if identityFile, err = selectOrGenerateKey(homeDir, prev.IdentityFile, v, theme); err != nil {
-			return "", ignoreAbort(err)
-		}
-	}
-	next := buildEntry(v, identityFile, homeDir, &prev)
+	next := buildEntry(w.hostFormValues, w.identityFile(), homeDir, &prev)
 
 	configPath := source.ConfigFile
 	if configPath == "" {
@@ -601,13 +858,19 @@ func CloneHostWizard(alias, homeDir string) (string, error) {
 
 	if owner, ok := FindAliasOwner(homeDir, next.Alias, "", ""); ok {
 		if !confirmOverwrite(next.Alias, owner, homeDir, theme) {
+			printCancelled()
 			return "", nil
+		}
+		if err := w.generateKey(); err != nil {
+			return "", err
 		}
 		if owner == configPath {
 			content = RemoveHost(content, next.Alias)
 		} else if err := DeleteHostFromConfigFile(next.Alias, owner); err != nil {
 			return "", err
 		}
+	} else if err := w.generateKey(); err != nil {
+		return "", err
 	}
 
 	if err := WriteConfigFile(configPath, []byte(InsertHost(content, block))); err != nil {
@@ -702,116 +965,4 @@ func copyPublicKey(pubKey, alias string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-// selectOrGenerateKey asks which private key the host should use, offering
-// discovered keys, a custom path, or a newly generated Ed25519 key.
-func selectOrGenerateKey(homeDir, initialKey string, v hostFormValues, theme huh.Theme) (string, error) {
-	sshDir := filepath.Join(homeDir, ".ssh")
-	discovered, _ := DiscoverKeys(sshDir)
-	var keyOptions []huh.Option[string]
-
-	selectedKey := ""
-	if initialKey != "" {
-		selectedKey = expandHome(initialKey, homeDir)
-		keyOptions = append(keyOptions, huh.NewOption(shortenHome(selectedKey, homeDir)+" (Current)", selectedKey))
-	}
-
-	for _, k := range discovered {
-		if k == selectedKey {
-			continue
-		}
-		keyOptions = append(keyOptions, huh.NewOption(shortenHome(k, homeDir), k))
-	}
-	keyOptions = append(keyOptions,
-		huh.NewOption("Custom key path...", "custom"),
-		huh.NewOption("Generate new Ed25519 key on the fly...", "generate"),
-	)
-
-	if selectedKey == "" && len(discovered) > 0 {
-		selectedKey = discovered[0]
-	}
-
-	formKey := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Select Private Key").
-				Description("Choose an existing key in ~/.ssh or generate a new one").
-				Options(keyOptions...).
-				Value(&selectedKey),
-		).Title("Step 3: Private Key Selection").Description("Select which SSH key to use for authentication"),
-	).WithTheme(theme)
-
-	if err := formKey.Run(); err != nil {
-		return "", err
-	}
-
-	switch selectedKey {
-	case "custom":
-		var customPath string
-		if err := customKeyForm(homeDir, &customPath, theme).Run(); err != nil {
-			return "", err
-		}
-		return expandHome(strings.TrimSpace(customPath), homeDir), nil
-
-	case "generate":
-		genPath := shortenHome(filepath.Join(sshDir, "id_ed25519_"+primaryAlias(v.alias)), homeDir)
-		if err := generateKeyForm(homeDir, &genPath, theme).Run(); err != nil {
-			return "", err
-		}
-
-		keyPath := expandHome(strings.TrimSpace(genPath), homeDir)
-		comment := fmt.Sprintf("%s@%s", strings.TrimSpace(v.user), strings.TrimSpace(v.hostName))
-
-		_, _ = lipgloss.Printf("\n%s Generating Ed25519 key at %s...\n\n", badge(" KEYGEN ", colorBlack, colorCyan), keyPath)
-		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-C", comment, "-f", keyPath) //nolint:gosec // intentional key generation
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			// ssh-keygen also exits non-zero when the user declines to overwrite an existing key,
-			// in which case that key is still usable.
-			if _, statErr := os.Stat(keyPath); statErr != nil {
-				return "", fmt.Errorf("ssh-keygen failed: %w", err)
-			}
-		}
-		return keyPath, nil
-
-	default:
-		return selectedKey, nil
-	}
-}
-
-// customKeyForm asks for the path of an existing private key, completing
-// key files and folders as it's typed.
-func customKeyForm(homeDir string, path *string, theme huh.Theme) *huh.Form {
-	in := huh.NewInput().
-		Title("Private Key Path").
-		Description("Path to your private key file").
-		Placeholder("~/.ssh/id_custom").
-		Value(path).
-		Validate(func(s string) error {
-			exp := expandHome(strings.TrimSpace(s), homeDir)
-			if _, err := os.Stat(exp); err != nil {
-				return fmt.Errorf("file does not exist: %s", exp)
-			}
-			return nil
-		})
-	form := huh.NewForm(
-		huh.NewGroup(in).Title("Custom Key Path").Description("Specify the absolute or ~-relative path to your key"),
-	).WithTheme(theme)
-	return completePathForm(form, in, path, newPathCompleter(homeDir, true))
-}
-
-// generateKeyForm asks where to create a new key, completing folders as
-// it's typed.
-func generateKeyForm(homeDir string, path *string, theme huh.Theme) *huh.Form {
-	in := huh.NewInput().
-		Title("New Key File Path").
-		Description("Path where the new Ed25519 key will be created").
-		Value(path)
-	form := huh.NewForm(
-		huh.NewGroup(in).Title("Generate Ed25519 Key").Description("New high-security elliptic curve key pair"),
-	).WithTheme(theme)
-	return completePathForm(form, in, path, newPathCompleter(homeDir, false))
 }

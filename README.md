@@ -19,6 +19,7 @@ It provides an intuitive dual-pane terminal interface to search, inspect, connec
   * Responsive layout that adapts smoothly between wide terminal splits and compact mobile/single-column views.
 * **Interactive Configuration Wizard (`sshx add`)**:
   * Step-by-step guided host setup powered by `huh` and styled with custom Lip Gloss borders and badges.
+  * <kbd>Shift</kbd>+<kbd>Tab</kbd> goes back to any earlier step, keeping your answers; <kbd>Esc</kbd> cancels from any step. Nothing is written, and no key is generated, until you save on the last step.
   * Automated private key discovery from `~/.ssh`.
   * Path completion in the custom key and new key inputs: <kbd>Tab</kbd> accepts the suggestion shown (keys and folders, starting with `~/.ssh/`).
   * On-the-fly Ed25519 key generation (`ssh-keygen`) with automated comment tagging.

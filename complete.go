@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"strings"
 
-	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 )
 
@@ -106,15 +106,49 @@ func isDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// completePathForm makes the only input of a one-input form complete paths
-// as they're typed, shown as ghost text that Tab accepts, as in a shell.
-// Huh accepts suggestions with Ctrl+E; Tab is free for it here, because Huh
-// turns off Tab's "next field" on a form's last field.
-func completePathForm(form *huh.Form, in *huh.Input, value *string, c pathCompleter) *huh.Form {
+// completion is an input that completes paths: where its text is, and what
+// it suggests for that text.
+type completion struct {
+	value   *string
+	suggest func(typed string) []string
+}
+
+// completePaths makes a wizard input complete paths as they're typed, shown
+// as ghost text that Tab accepts (completeOnTab), as in a shell.
+func (w *hostWizard) completePaths(in *huh.Input, value *string, c pathCompleter) *huh.Input {
+	if w.completions == nil {
+		w.completions = map[string]completion{}
+	}
+	w.completions[in.GetKey()] = completion{value, c.suggest}
 	// Huh runs the func again whenever the binding changes; it follows the
 	// pointer, so every keystroke counts.
-	in.SuggestionsFunc(func() []string { return c.suggest(*value) }, value)
-	km := huh.NewDefaultKeyMap()
-	km.Input.AcceptSuggestion = key.NewBinding(key.WithKeys("tab", "ctrl+e"), key.WithHelp("tab", "complete"))
-	return form.WithKeyMap(km)
+	return in.SuggestionsFunc(func() []string { return c.suggest(*value) }, value)
+}
+
+// acceptSuggestion is the key Huh accepts a suggestion with.
+var acceptSuggestion = tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl}
+
+// completeOnTab makes Tab accept the suggestion a path input shows. Without
+// one, Tab moves on as usual. Huh can't tell the two apart itself: Tab would
+// both accept the suggestion and leave the field.
+func (w *hostWizard) completeOnTab(msg tea.Msg) tea.Msg {
+	k, ok := msg.(tea.KeyPressMsg)
+	if !ok || k.String() != "tab" || w.form == nil {
+		return msg
+	}
+	field := w.form.GetFocusedField()
+	if field == nil {
+		return msg
+	}
+	c, ok := w.completions[field.GetKey()]
+	if !ok {
+		return msg
+	}
+	typed := *c.value
+	for _, s := range c.suggest(typed) {
+		if len(s) > len(typed) && strings.HasPrefix(strings.ToLower(s), strings.ToLower(typed)) {
+			return acceptSuggestion
+		}
+	}
+	return msg
 }
