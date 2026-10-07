@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"bufio"
@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/vehkiya/sshx/internal/sshconfig"
+	"github.com/vehkiya/sshx/internal/ui"
 )
 
 // localTimeout bounds the ssh and ssh-keygen calls that only read local
@@ -70,8 +72,8 @@ func rememberPassphrase(w io.Writer, key, alias, homeDir string, ask func(title,
 	if key == "" || !hasPassphrase(key) {
 		return
 	}
-	short := shortenHome(key, homeDir)
-	dim := lipgloss.NewStyle().Foreground(colorDim)
+	short := sshconfig.ShortenHome(key, homeDir)
+	dim := lipgloss.NewStyle().Foreground(ui.ColorDim)
 	if !keychainSupported() {
 		_, _ = lipgloss.Fprintf(w, "\n%s\n", dim.Render(fmt.Sprintf(
 			"Load %s into your agent so ssh doesn't ask for its passphrase on every connection: ssh-add %s", short, short)))
@@ -84,11 +86,11 @@ func rememberPassphrase(w io.Writer, key, alias, homeDir string, ask func(title,
 	}
 	if err := addToKeychain(key); err != nil {
 		_, _ = lipgloss.Fprintf(w, "\n%s Couldn't keep the passphrase in the Keychain (%v). Try again with: ssh-add --apple-use-keychain %s\n",
-			badge(" KEYCHAIN ", colorBlack, colorAmber), err, short)
+			ui.Badge(" KEYCHAIN ", ui.ColorBlack, ui.ColorAmber), err, short)
 		return
 	}
 	_, _ = lipgloss.Fprintf(w, "\n%s The passphrase of %s is in your Keychain, and the key is in your agent\n",
-		badge(" KEYCHAIN ", colorBlack, colorGreen), short)
+		ui.Badge(" KEYCHAIN ", ui.ColorBlack, ui.ColorGreen), short)
 
 	// The agent forgets the key when you log out. ssh then reads the
 	// passphrase from the Keychain only where UseKeychain applies, and

@@ -1,4 +1,4 @@
-package main
+package update
 
 import (
 	"archive/tar"
@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/vehkiya/sshx/internal/sshconfig"
+	"github.com/vehkiya/sshx/internal/ui"
 )
 
 const (
@@ -127,6 +129,11 @@ func updateCachePath(homeDir string) string {
 	return filepath.Join(homeDir, ".cache", "sshx", "update-check.json")
 }
 
+// CheckDisabled reports whether update checking is disabled via environment variable or version setting.
+func CheckDisabled(currentVersion string) bool {
+	return updateCheckDisabled(currentVersion)
+}
+
 // updateCheckDisabled reports whether the background update check should be skipped:
 // when the user opted out, or for development builds that have no release to compare with.
 func updateCheckDisabled(currentVersion string) bool {
@@ -139,7 +146,7 @@ func writeUpdateCache(homeDir, latestVersion string) {
 		LatestVersion: latestVersion,
 	}
 	if cData, err := json.Marshal(c); err == nil {
-		_ = AtomicWrite(updateCachePath(homeDir), cData, 0600)
+		_ = sshconfig.AtomicWrite(updateCachePath(homeDir), cData, 0600)
 	}
 }
 
@@ -250,9 +257,9 @@ func PerformUpdate(currentVersion string, stdout io.Writer, force bool) (bool, e
 		writeUpdateCache(homeDir, rel.TagName)
 	}
 
-	updatedBadge := badge(" UPDATED ", colorBlack, colorGreen)
+	updatedBadge := ui.Badge(" UPDATED ", ui.ColorBlack, ui.ColorGreen)
 	infoStyle := lipgloss.NewStyle().
-		Foreground(colorCyan).
+		Foreground(ui.ColorCyan).
 		Bold(true)
 	_, _ = lipgloss.Fprintf(stdout, "\n%s Successfully updated sshx to %s at %s\n\n", updatedBadge, rel.TagName, path)
 	_, _ = lipgloss.Fprintf(stdout, "%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))

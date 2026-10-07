@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"bytes"
@@ -18,6 +18,52 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/vehkiya/sshx/internal/sshconfig"
+	"github.com/vehkiya/sshx/internal/ui"
+)
+
+type (
+	HostItem  = sshconfig.HostItem
+	HostEntry = sshconfig.HostEntry
+)
+
+var (
+	colorPurple    = ui.ColorPurple
+	colorCoral     = ui.ColorCoral
+	colorCyan      = ui.ColorCyan
+	colorGreen     = ui.ColorGreen
+	colorAmber     = ui.ColorAmber
+	colorRed       = ui.ColorRed
+	colorWhite     = ui.ColorWhite
+	colorBlack     = ui.ColorBlack
+	colorLightGray = ui.ColorLightGray
+	colorDim       = ui.ColorDim
+	colorSeparator = ui.ColorSeparator
+	colorDarkGray  = ui.ColorDarkGray
+)
+
+func badge(text string, fg, bg color.Color) string {
+	return ui.Badge(text, fg, bg)
+}
+
+var (
+	ParseTarget              = sshconfig.ParseTarget
+	FindHost                 = sshconfig.FindHost
+	LoadAllHosts             = sshconfig.LoadAllHosts
+	FindAliasOwner           = sshconfig.FindAliasOwner
+	ResolveHostConfigFile    = sshconfig.ResolveHostConfigFile
+	DeleteHostFromConfigFile = sshconfig.DeleteHostFromConfigFile
+	UpdateHost               = sshconfig.UpdateHost
+	InsertHost               = sshconfig.InsertHost
+	RemoveHost               = sshconfig.RemoveHost
+	WriteConfigFile          = sshconfig.WriteConfigFile
+	BackupPath               = sshconfig.BackupPath
+	DiscoverKeys             = sshconfig.DiscoverKeys
+	CloneHost                = sshconfig.CloneHost
+	isConcreteAlias          = sshconfig.IsConcreteAlias
+	hostSection              = sshconfig.HostSection
+	expandHome               = sshconfig.ExpandHome
+	shortenHome              = sshconfig.ShortenHome
 )
 
 // Authentication strategies offered by the host wizards.
@@ -119,41 +165,7 @@ func renderWizardHeader(label string, fg, bg color.Color, title, desc string) {
 }
 
 func highlightConfigBlock(block string) string {
-	var lines []string
-	kwHost := lipgloss.NewStyle().Bold(true).Foreground(colorCoral)
-	valHost := lipgloss.NewStyle().Bold(true).Foreground(colorWhite)
-	kwDirective := lipgloss.NewStyle().Bold(true).Foreground(colorCyan)
-	valDirective := lipgloss.NewStyle().Foreground(colorLightGray)
-	commentStyle := lipgloss.NewStyle().Italic(true).Foreground(colorDim)
-
-	for _, line := range strings.Split(strings.TrimRight(block, "\n"), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			lines = append(lines, "")
-			continue
-		}
-		if strings.HasPrefix(trimmed, "#") {
-			indent := ""
-			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-				indent = "    "
-			}
-			lines = append(lines, indent+commentStyle.Render(trimmed))
-			continue
-		}
-		idx := strings.IndexAny(trimmed, " \t")
-		if idx == -1 {
-			lines = append(lines, line)
-			continue
-		}
-		kw := trimmed[:idx]
-		val := strings.TrimSpace(trimmed[idx:])
-		if strings.EqualFold(kw, "Host") || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
-			lines = append(lines, fmt.Sprintf("%s %s", kwHost.Render(kw), valHost.Render(val)))
-		} else {
-			lines = append(lines, fmt.Sprintf("    %s %s", kwDirective.Render(kw), valDirective.Render(val)))
-		}
-	}
-	return strings.Join(lines, "\n")
+	return ui.HighlightConfigBlock(block)
 }
 
 // wizardMode selects the wording and field order of the shared host form.
@@ -695,17 +707,6 @@ func readConfig(configPath string) string {
 	return string(data)
 }
 
-// hostSection returns the text of the first Host section listing alias.
-func hostSection(content, alias string) string {
-	lines := strings.Split(content, "\n")
-	for _, b := range parseHostBlocks(lines) {
-		if b.has(alias) {
-			return strings.Join(lines[b.start:b.end], "\n")
-		}
-	}
-	return ""
-}
-
 func printSavedCard(label, message, block string) {
 	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -985,4 +986,9 @@ func copyPublicKey(pubKey, alias string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// CopyPublicKey installs pubKey in authorized_keys on the host behind alias.
+func CopyPublicKey(pubKey, alias string) error {
+	return copyPublicKey(pubKey, alias)
 }

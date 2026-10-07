@@ -1,4 +1,4 @@
-package main
+package update
 
 import (
 	"archive/tar"
@@ -17,10 +17,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vehkiya/sshx/internal/sshconfig"
 )
 
 func TestIsNewerVersion(t *testing.T) {
@@ -193,7 +194,7 @@ func TestCheckLatestReleaseCachedLocal(t *testing.T) {
 		LatestVersion: "v0.9.0",
 	}
 	cData, _ := json.Marshal(c)
-	if err := AtomicWrite(updateCachePath(tmpDir), cData, 0600); err != nil {
+	if err := sshconfig.AtomicWrite(updateCachePath(tmpDir), cData, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,29 +282,6 @@ func TestReplaceExecutableRestoresOnWindowsFailure(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Errorf("expected temporary files to be cleaned up, got %v", entries)
-	}
-}
-
-func TestApplyBuildInfo(t *testing.T) {
-	saved := [3]string{Version, Commit, BuildDate}
-	t.Cleanup(func() { Version, Commit, BuildDate = saved[0], saved[1], saved[2] })
-
-	Version, Commit, BuildDate = "dev", "none", "unknown"
-	applyBuildInfo(&debug.BuildInfo{
-		Main: debug.Module{Version: "v1.2.3"},
-		Settings: []debug.BuildSetting{
-			{Key: "vcs.revision", Value: "0123456789abcdef"},
-			{Key: "vcs.time", Value: "2026-10-02T09:00:00Z"},
-		},
-	})
-	if Version != "v1.2.3" || Commit != "0123456" || BuildDate != "2026-10-02T09:00:00Z" {
-		t.Errorf("unexpected build info: %s %s %s", Version, Commit, BuildDate)
-	}
-
-	Version = "v9.9.9"
-	applyBuildInfo(&debug.BuildInfo{Main: debug.Module{Version: "(devel)"}})
-	if Version != "v9.9.9" {
-		t.Errorf("expected -ldflags versions to take precedence, got %s", Version)
 	}
 }
 

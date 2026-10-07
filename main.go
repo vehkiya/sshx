@@ -14,6 +14,12 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/vehkiya/sshx/internal/probe"
+	"github.com/vehkiya/sshx/internal/sshconfig"
+	"github.com/vehkiya/sshx/internal/tui"
+	"github.com/vehkiya/sshx/internal/ui"
+	"github.com/vehkiya/sshx/internal/update"
+	"github.com/vehkiya/sshx/internal/wizard"
 )
 
 // subcommands are the CLI verbs; any other first argument is treated as a host to connect to.
@@ -36,7 +42,7 @@ func main() {
 		args = append([]string{"add"}, args...)
 	}
 
-	RemoveStaleBinary()
+	update.RemoveStaleBinary()
 	os.Exit(run(args, homeDir))
 }
 
@@ -70,7 +76,7 @@ func run(args []string, homeDir string) int {
 		if len(args) > 2 {
 			alias = args[2]
 		}
-		connectTarget, connectNow, err := AddHostWizard(target, alias, homeDir, true)
+		connectTarget, connectNow, err := wizard.AddHostWizard(target, alias, homeDir, true)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
@@ -88,7 +94,7 @@ func run(args []string, homeDir string) int {
 			fmt.Fprintln(os.Stderr, "Usage: sshx rm <alias>")
 			return 2
 		}
-		if err := DeleteHostPrompt(args[1], homeDir); err != nil {
+		if err := wizard.DeleteHostPrompt(args[1], homeDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Error deleting host: %v\n", err)
 			return 1
 		}
@@ -99,7 +105,7 @@ func run(args []string, homeDir string) int {
 			fmt.Fprintln(os.Stderr, "Usage: sshx clone <alias>")
 			return 2
 		}
-		if _, err := CloneHostWizard(args[1], homeDir); err != nil {
+		if _, err := wizard.CloneHostWizard(args[1], homeDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Error cloning host: %v\n", err)
 			return 1
 		}
@@ -126,7 +132,7 @@ func run(args []string, homeDir string) int {
 		if checkOnly {
 			return checkForUpdate()
 		}
-		if _, err := PerformUpdate(Version, os.Stdout, force); err != nil {
+		if _, err := update.PerformUpdate(Version, os.Stdout, force); err != nil {
 			fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
 			return 1
 		}
@@ -137,7 +143,7 @@ func run(args []string, homeDir string) int {
 
 	case "edit":
 		if len(args) > 1 {
-			if _, err := EditHostWizard(args[1], homeDir); err != nil {
+			if _, err := wizard.EditHostWizard(args[1], homeDir); err != nil {
 				fmt.Fprintf(os.Stderr, "Error editing host: %v\n", err)
 				return 1
 			}
@@ -159,8 +165,8 @@ func run(args []string, homeDir string) int {
 		return 2
 	}
 
-	hosts, _ := LoadAllHosts(homeDir)
-	if h, ok := FindHost(hosts, args[0]); ok {
+	hosts, _ := sshconfig.LoadAllHosts(homeDir)
+	if h, ok := sshconfig.FindHost(hosts, args[0]); ok {
 		return connectSSH(h.Alias, args[1:]...)
 	}
 	// Anything that looks like a target (user@host, an FQDN or IP) goes straight to ssh,
@@ -177,7 +183,7 @@ func run(args []string, homeDir string) int {
 func runTUILoop(homeDir string) int {
 	lastSelected := ""
 	for {
-		choice, action, err := RunTUI(homeDir, lastSelected)
+		choice, action, err := tui.RunTUI(homeDir, Version, lastSelected)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			return 1
@@ -194,7 +200,7 @@ func runTUILoop(homeDir string) int {
 			return 0
 
 		case "add":
-			addedAlias, _, err := AddHostWizard("", "", homeDir, false)
+			addedAlias, _, err := wizard.AddHostWizard("", "", homeDir, false)
 			if reportWizardError(err) {
 				continue
 			}
@@ -204,7 +210,7 @@ func runTUILoop(homeDir string) int {
 
 		case "edit-host":
 			if choice != "" {
-				editedAlias, err := EditHostWizard(choice, homeDir)
+				editedAlias, err := wizard.EditHostWizard(choice, homeDir)
 				if reportWizardError(err) {
 					continue
 				}
@@ -215,7 +221,7 @@ func runTUILoop(homeDir string) int {
 
 		case "clone-host":
 			if choice != "" {
-				clonedAlias, err := CloneHostWizard(choice, homeDir)
+				clonedAlias, err := wizard.CloneHostWizard(choice, homeDir)
 				if reportWizardError(err) {
 					continue
 				}
@@ -234,7 +240,7 @@ func runTUILoop(homeDir string) int {
 			openEditor(homeDir)
 
 		case "upgrade":
-			updated, err := PerformUpdate(Version, os.Stdout, false)
+			updated, err := update.PerformUpdate(Version, os.Stdout, false)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\nUpdate error: %v\n", err)
 				pausePrompt()
@@ -267,7 +273,7 @@ func pausePrompt() {
 }
 
 func checkForUpdate() int {
-	rel, isNewer, err := CheckLatestRelease(Version)
+	rel, isNewer, err := update.CheckLatestRelease(Version)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
 		return 1
@@ -281,7 +287,7 @@ func checkForUpdate() int {
 }
 
 func printUsage() {
-	header := lipgloss.NewStyle().Bold(true).Foreground(colorCoral).Render("sshx — TUI SSH Connection Manager")
+	header := lipgloss.NewStyle().Bold(true).Foreground(ui.ColorCoral).Render("sshx — TUI SSH Connection Manager")
 	_, _ = lipgloss.Printf("%s\n\n", header)
 	fmt.Println("Usage:")
 	fmt.Println("  sshx                          Launch interactive host browser")
@@ -313,7 +319,7 @@ func printUsage() {
 }
 
 func listHosts(w io.Writer, homeDir string) int {
-	hosts, err := LoadAllHosts(homeDir)
+	hosts, err := sshconfig.LoadAllHosts(homeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading hosts: %v\n", err)
 		return 1
@@ -328,7 +334,7 @@ func listHosts(w io.Writer, homeDir string) int {
 }
 
 // writeHostTable prints hosts as aligned columns, padding by display width so colours and wide characters line up.
-func writeHostTable(w io.Writer, hosts []HostItem) {
+func writeHostTable(w io.Writer, hosts []sshconfig.HostItem) {
 	headers := []string{"ALIAS", "TARGET", "PORT", "AUTH"}
 	rows := make([][]string, 0, len(hosts))
 	for _, h := range hosts {
@@ -372,7 +378,7 @@ func writeHostTable(w io.Writer, hosts []HostItem) {
 		return strings.Join(out, "  ")
 	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorPurple)
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ui.ColorPurple)
 	total := 2 * (len(widths) - 1)
 	for _, wd := range widths {
 		total += wd
@@ -449,8 +455,8 @@ func openEditor(homeDir string) {
 }
 
 func runCopyIDForHost(alias, homeDir string) {
-	hosts, _ := LoadAllHosts(homeDir)
-	targetHost, ok := FindHost(hosts, alias)
+	hosts, _ := sshconfig.LoadAllHosts(homeDir)
+	targetHost, ok := sshconfig.FindHost(hosts, alias)
 	if !ok {
 		fmt.Printf("Host '%s' not found.\n", alias)
 		return
@@ -458,7 +464,7 @@ func runCopyIDForHost(alias, homeDir string) {
 
 	key := targetHost.IdentityFile
 	if key == "" {
-		keys, _ := DiscoverKeys(filepath.Join(homeDir, ".ssh"))
+		keys, _ := sshconfig.DiscoverKeys(filepath.Join(homeDir, ".ssh"))
 		if len(keys) > 0 {
 			key = keys[0]
 		}
@@ -468,42 +474,42 @@ func runCopyIDForHost(alias, homeDir string) {
 		return
 	}
 
-	pubKey := expandHome(key, homeDir) + ".pub"
+	pubKey := sshconfig.ExpandHome(key, homeDir) + ".pub"
 	if _, err := os.Stat(pubKey); err != nil {
 		fmt.Printf("Public key %s not found.\n", pubKey)
 		return
 	}
 
-	if err := copyPublicKey(pubKey, targetHost.Alias); err != nil {
+	if err := wizard.CopyPublicKey(pubKey, targetHost.Alias); err != nil {
 		fmt.Fprintf(os.Stderr, "Copying public key failed: %v\n", err)
 	}
 }
 
 func probeHostCLI(alias, homeDir string) int {
-	hosts, err := LoadAllHosts(homeDir)
+	hosts, err := sshconfig.LoadAllHosts(homeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading hosts: %v\n", err)
 		return 1
 	}
 
-	targetHost, ok := FindHost(hosts, alias)
+	targetHost, ok := sshconfig.FindHost(hosts, alias)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Host '%s' not found in SSH configuration.\n", alias)
 		return 1
 	}
 
-	addr, via := probeAddress(targetHost, hosts)
+	addr, via := probe.Address(targetHost, hosts)
 	if via != "" {
 		fmt.Printf("%s is behind ProxyJump %s; probing the jump host (%s)...\n", targetHost.Alias, via, addr)
 	} else {
 		fmt.Printf("Probing TCP reachability for %s (%s)...\n", targetHost.Alias, addr)
 	}
 
-	latency, err := probeTCP(addr, 2*time.Second)
+	latency, err := probe.TCP(addr, 2*time.Second)
 	if err != nil {
-		_, _ = lipgloss.Printf("\n%s Failed to connect to %s: %v\n", badge(" UNREACHABLE ", colorWhite, colorRed), addr, err)
+		_, _ = lipgloss.Printf("\n%s Failed to connect to %s: %v\n", ui.Badge(" UNREACHABLE ", ui.ColorWhite, ui.ColorRed), addr, err)
 		return 1
 	}
-	_, _ = lipgloss.Printf("\n%s Connected to %s in %dms\n", badge(" REACHABLE ", colorBlack, colorGreen), addr, latency.Milliseconds())
+	_, _ = lipgloss.Printf("\n%s Connected to %s in %dms\n", ui.Badge(" REACHABLE ", ui.ColorBlack, ui.ColorGreen), addr, latency.Milliseconds())
 	return 0
 }

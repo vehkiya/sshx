@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"os"
@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	"github.com/vehkiya/sshx/internal/sshconfig"
 )
 
 // maxSuggestions bounds the suggestions for one path, so a huge folder
@@ -47,7 +48,7 @@ func (c pathCompleter) suggest(typed string) []string {
 	if i := strings.LastIndexAny(typed, `/`+string(filepath.Separator)); i >= 0 {
 		dirPart, prefix, sep = typed[:i+1], typed[i+1:], typed[i:i+1]
 	}
-	dir := expandHome(dirPart, c.homeDir)
+	dir := sshconfig.ExpandHome(dirPart, c.homeDir)
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(c.cwd, dir)
 	}
@@ -57,7 +58,7 @@ func (c pathCompleter) suggest(typed string) []string {
 	}
 	isKey := map[string]bool{}
 	if c.keyFiles {
-		keys, _ := DiscoverKeys(dir)
+		keys, _ := sshconfig.DiscoverKeys(dir)
 		for _, k := range keys {
 			isKey[filepath.Base(k)] = true
 		}

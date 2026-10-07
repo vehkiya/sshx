@@ -1,4 +1,4 @@
-package main
+package sshconfig
 
 import (
 	"os"
@@ -720,6 +720,16 @@ func TestShortenHome(t *testing.T) {
 	}
 	if got := shortenHome(sibling, home); got != sibling {
 		t.Errorf("expected a sibling home directory to be left alone, got %q", got)
+	}
+}
+
+func TestHostSection(t *testing.T) {
+	section := HostSection(sharedConfig, "beta")
+	if section != "Host beta\n    HostName beta.lan" {
+		t.Errorf("unexpected section: %q", section)
+	}
+	if !strings.HasPrefix(HostSection(sharedConfig, "10.10.1.218"), "Host fortress 10.10.1.218") {
+		t.Errorf("expected lookup by secondary alias to find the fortress section")
 	}
 }
 
