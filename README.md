@@ -186,6 +186,9 @@ sshx update --check
 # List all configured SSH hosts in terminal
 sshx ls
 
+# Output hosts as structured JSON for scripting
+sshx ls --json
+
 # Remove a host (and all of its aliases) from the config file that defines it
 sshx rm prod-server
 
@@ -195,6 +198,23 @@ sshx edit
 # View version info
 sshx --version
 ```
+
+### Accessibility (`ACCESSIBLE=1`)
+
+Set `ACCESSIBLE=1` for plain, non-interactive line-by-line prompts designed for screen readers and scripted execution:
+- `ACCESSIBLE=1 sshx` outputs the host table (`sshx ls`) instead of launching the full-screen interactive browser.
+- Wizards (`add`, `edit`, `clone`, `rm`) run one prompt per line, making them operable with screen readers or by piping scripted inputs to `stdin`.
+
+### Machine-Readable Output (`sshx ls --json`)
+
+`sshx ls --json` prints a plain JSON array of host objects without terminal styling or ANSI escape sequences:
+- `alias`: Primary host alias
+- `hostName`: Configured HostName / IP target
+- `user`: Remote username
+- `port`: Connection port
+- `identityFile`: Path to private key file
+- `auth`: Authentication method (`"key"`, `"password"`, or `"default"`)
+- `configFile`: Path to the config file where the host block is defined (including nested `Include` files)
 
 ---
 

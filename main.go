@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/vehkiya/sshx/internal/probe"
 	"github.com/vehkiya/sshx/internal/sshconfig"
 	"github.com/vehkiya/sshx/internal/tui"
@@ -47,9 +49,23 @@ func main() {
 	os.Exit(run(args, homeDir))
 }
 
+// accessible reports whether accessible prompts should be used ($ACCESSIBLE).
+func accessible() bool {
+	return os.Getenv("ACCESSIBLE") != ""
+}
+
+// browsable reports whether stdout and stdin are terminals and ACCESSIBLE is unset,
+// so the interactive host browser can open.
+func browsable() bool {
+	return term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd()) && !accessible()
+}
+
 // run dispatches the command line and returns the process exit code.
 func run(args []string, homeDir string) int {
 	if len(args) == 0 {
+		if !browsable() {
+			return cmdLs(nil, os.Stdout, homeDir)
+		}
 		return runTUILoop(homeDir)
 	}
 
@@ -88,7 +104,7 @@ func run(args []string, homeDir string) int {
 		return 0
 
 	case "ls", "list":
-		return listHosts(os.Stdout, homeDir)
+		return cmdLs(args[1:], os.Stdout, homeDir)
 
 	case "rm", "delete", "remove":
 		if len(args) < 2 {
@@ -327,7 +343,7 @@ func printUsage() {
 	fmt.Println("  sshx <alias> [command...]     Connect to host (optionally run a remote command)")
 	fmt.Println("  sshx connect <target> [cmd]   Pass any target straight to ssh")
 	fmt.Println("  sshx add [target] [alias]     Interactively add a new SSH host")
-	fmt.Println("  sshx ls                       List all configured SSH hosts")
+	fmt.Println("  sshx ls [--json]              List all configured SSH hosts")
 	fmt.Println("  sshx rm <alias>               Remove a host from its SSH config file")
 	fmt.Println("  sshx edit [alias]             Edit host in wizard, or open ~/.ssh/config in $EDITOR")
 	fmt.Println("  sshx clone <alias>            Duplicate / clone an existing host")
@@ -349,20 +365,78 @@ func printUsage() {
 	fmt.Println("  E          Open ~/.ssh/config in $EDITOR")
 	fmt.Println("  Tab        Toggle details inspector (on compact displays)")
 	fmt.Println("  q, Esc     Quit")
+	fmt.Println()
+	fmt.Println("Set ACCESSIBLE=1 for plain prompts instead of interactive forms, and plain")
+	fmt.Println("listings instead of the host browser.")
 }
 
-func listHosts(w io.Writer, homeDir string) int {
+const lsUsage = "sshx ls [--json]"
+
+// hostJSON is the machine-readable representation of a host for `sshx ls --json`.
+type hostJSON struct {
+	Alias        string `json:"alias"`
+	HostName     string `json:"hostName"`
+	User         string `json:"user"`
+	Port         int    `json:"port"`
+	IdentityFile string `json:"identityFile"`
+	Auth         string `json:"auth"`
+	ConfigFile   string `json:"configFile"`
+}
+
+func hostAuth(h sshconfig.HostItem) string {
+	if !h.PubkeyAuth || h.PasswordAuth {
+		return "password"
+	}
+	if h.IdentityFile != "" {
+		return "key"
+	}
+	return "default"
+}
+
+func cmdLs(args []string, w io.Writer, homeDir string) int {
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var asJSON bool
+	fs.BoolVar(&asJSON, "json", false, "output hosts as JSON")
+	if err := fs.Parse(args); err != nil || len(fs.Args()) != 0 {
+		fmt.Fprintln(os.Stderr, "Usage: "+lsUsage)
+		return 2
+	}
 	hosts, err := sshconfig.LoadAllHosts(homeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading hosts: %v\n", err)
 		return 1
 	}
-
+	if asJSON {
+		return printHostsJSON(w, hosts)
+	}
 	if len(hosts) == 0 {
 		_, _ = fmt.Fprintln(w, "No configured SSH hosts found in ~/.ssh/config.")
 		return 0
 	}
 	writeHostTable(w, hosts)
+	return 0
+}
+
+func printHostsJSON(w io.Writer, hosts []sshconfig.HostItem) int {
+	out := make([]hostJSON, len(hosts))
+	for i, h := range hosts {
+		out[i] = hostJSON{
+			Alias:        h.Alias,
+			HostName:     h.HostName,
+			User:         h.User,
+			Port:         h.Port,
+			IdentityFile: h.IdentityFile,
+			Auth:         hostAuth(h),
+			ConfigFile:   h.ConfigFile,
+		}
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintln(w, string(data))
 	return 0
 }
 

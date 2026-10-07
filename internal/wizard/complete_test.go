@@ -242,3 +242,16 @@ func TestPathSuggestions(t *testing.T) {
 		t.Errorf("a huge folder gave %d suggestions, want %d", len(got), maxSuggestions)
 	}
 }
+
+func TestNoSuggestionsInAccessibleMode(t *testing.T) {
+	t.Setenv("ACCESSIBLE", "1")
+	w := newHostWizard(wizardAdd, hostFormValues{}, t.TempDir(), "")
+	in := huh.NewInput().Key("custom-key")
+	res := w.completePaths(in, &w.customKey, newPathCompleter(t.TempDir(), true))
+	if len(w.completions) != 0 {
+		t.Errorf("accessible mode registered completions: %v", w.completions)
+	}
+	if res != in {
+		t.Errorf("completePaths should return in unmodified in accessible mode")
+	}
+}

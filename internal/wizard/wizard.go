@@ -1,17 +1,20 @@
 package wizard
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"errors"
 	"fmt"
 	"image/color"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"charm.land/bubbles/v2/key"
@@ -384,24 +387,117 @@ func formKeyMap() *huh.KeyMap {
 	return km
 }
 
-// newForm puts the wizard's pages into one form, so Shift+Tab goes back to
-// any earlier page and Esc cancels from any of them. The key pages show only
-// when the answers before them ask for a key.
-func (w *hostWizard) newForm(theme huh.Theme) *huh.Form {
+// wizardStep is one page of the wizard. hide skips it, for example the key
+// pages when password authentication is chosen. The page is built when it's
+// needed, so accessible prompts, asked one at a time, see earlier answers.
+type wizardStep struct {
+	group func() *huh.Group
+	hide  func() bool
+}
+
+// Accessible reports whether wizards and prompts should run in accessible
+// line-by-line mode for screen readers ($ACCESSIBLE).
+func Accessible() bool {
+	return os.Getenv("ACCESSIBLE") != ""
+}
+
+func accessible() bool {
+	return Accessible()
+}
+
+// lineReader hands over input one line per Read. Huh's accessible mode
+// scans each answer with a new scanner, which would otherwise swallow the
+// answers after it.
+type lineReader struct {
+	r      *bufio.Reader
+	excess []byte
+}
+
+var (
+	ioMu         sync.Mutex
+	sharedReader *lineReader
+	sharedOut    io.Writer = os.Stdout
+)
+
+func getLineReader() *lineReader {
+	ioMu.Lock()
+	defer ioMu.Unlock()
+	if sharedReader == nil {
+		sharedReader = &lineReader{r: bufio.NewReader(os.Stdin)}
+	}
+	return sharedReader
+}
+
+func (l *lineReader) Read(p []byte) (int, error) {
+	if len(l.excess) > 0 {
+		n := copy(p, l.excess)
+		l.excess = l.excess[n:]
+		return n, nil
+	}
+	line, err := l.r.ReadString('\n')
+	if len(line) == 0 && err != nil {
+		return 0, err
+	}
+	n := copy(p, line)
+	if n < len(line) {
+		l.excess = []byte(line[n:])
+	}
+	return n, nil
+}
+
+// SetIO sets the input reader and output writer for accessible forms and prompts in tests.
+func SetIO(in io.Reader, out io.Writer) {
+	ioMu.Lock()
+	defer ioMu.Unlock()
+	if in != nil {
+		sharedReader = &lineReader{r: bufio.NewReader(in)}
+	} else {
+		sharedReader = nil
+	}
+	if out != nil {
+		sharedOut = out
+	} else {
+		sharedOut = os.Stdout
+	}
+}
+
+// ResetIO restores the default stdin reader and stdout writer.
+func ResetIO() {
+	SetIO(nil, nil)
+}
+
+// keepIfEmpty validates an answer, letting an empty one through when the
+// field already has a value: that means "keep it". Huh's accessible prompts
+// check the typed text before falling back to the current value.
+func keepIfEmpty(current string, validate func(string) error) func(string) error {
+	return func(s string) error {
+		s = strings.TrimSpace(s)
+		if s == "" && strings.TrimSpace(current) != "" {
+			return nil
+		}
+		return validate(s)
+	}
+}
+
+func (w *hostWizard) wizardSteps(theme huh.Theme) []wizardStep {
 	text := hostFormTexts[w.mode]
+
+	prevHostName := w.hostName
+	prevAlias := w.alias
+	prevCustomKey := w.customKey
 
 	hostInput := huh.NewInput().Key("hostname").
 		Title("HostName / IP").
 		Description(text.hostDesc).
 		Placeholder(text.hostPlaceholder).
 		Value(&w.hostName).
-		Validate(forward(w, validateHostName))
+		Validate(forward(w, keepIfEmpty(prevHostName, validateHostName)))
 	aliasInput := huh.NewInput().Key("alias").
 		Title(text.aliasTitle).
 		Description(text.aliasDesc).
 		Placeholder(text.aliasPlaceholder).
 		Value(&w.alias).
-		Validate(forward(w, validateAlias))
+		Validate(forward(w, keepIfEmpty(prevAlias, validateAlias)))
 	userInput := huh.NewInput().Key("user").
 		Title("User").
 		Description("Remote login username").
@@ -431,7 +527,7 @@ func (w *hostWizard) newForm(theme huh.Theme) *huh.Form {
 		Description("Path to your private key file").
 		Placeholder("~/.ssh/id_custom").
 		Value(&w.customKey).
-		Validate(forward(w, w.checkKeyFile)),
+		Validate(forward(w, keepIfEmpty(prevCustomKey, w.checkKeyFile))),
 		&w.customKey, newPathCompleter(w.homeDir, true))
 	// The default path follows the alias, even after going back to change
 	// it; the placeholder is bound to the alias alone.
@@ -445,54 +541,98 @@ func (w *hostWizard) newForm(theme huh.Theme) *huh.Form {
 
 	noKey := func() bool { return w.auth != authKey }
 
-	w.form = huh.NewForm(
-		huh.NewGroup(fields...).Title(text.step).Description(text.stepDesc),
-		huh.NewGroup(
-			huh.NewSelect[string]().Key("auth").
-				Title("Authentication Method").
-				Description("Choose how you connect to this server").
-				Options(
-					huh.NewOption("SSH Key (IdentityFile) [Recommended]", authKey),
-					huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", authPassword),
-					huh.NewOption("Standard / Default (agent keys with password fallback)", authDefault),
-				).
-				Value(&w.auth),
-		).Title("Step 2: Authentication").Description(text.authDesc),
-		huh.NewGroup(
-			huh.NewSelect[string]().Key("key").
-				Title("Select Private Key").
-				Description("Choose an existing key in ~/.ssh or generate a new one").
-				Options(w.keyOptions...).
-				Value(&w.keyChoice),
-		).Title("Step 3: Private Key Selection").Description("Select which SSH key to use for authentication").
-			WithHideFunc(noKey),
-		huh.NewGroup(customKeyInput).
-			Title("Custom Key Path").Description("Specify the absolute or ~-relative path to your key").
-			WithHideFunc(func() bool { return noKey() || w.keyChoice != keyCustom }),
-		huh.NewGroup(newKeyInput).
-			Title("Generate Ed25519 Key").Description("New high-security elliptic curve key pair, created once you save").
-			WithHideFunc(func() bool { return noKey() || w.keyChoice != keyGenerate }),
-		huh.NewGroup(
-			huh.NewConfirm().Key("save").
-				Title("Save this host?").
-				Description("Nothing is written until you save").
-				Affirmative("Save").Negative("Cancel").
-				Value(&w.save).
-				Validate(forward(w, func(save bool) error {
-					if !save {
-						return nil
-					}
-					return w.checkAnswers()
-				})),
-		).Title("Step 4: Save"),
-	).WithTheme(theme).WithKeyMap(formKeyMap()).WithProgramOptions(tea.WithFilter(w.filter))
+	return []wizardStep{
+		{group: func() *huh.Group { return huh.NewGroup(fields...).Title(text.step).Description(text.stepDesc) }},
+		{group: func() *huh.Group {
+			return huh.NewGroup(
+				huh.NewSelect[string]().Key("auth").
+					Title("Authentication Method").
+					Description("Choose how you connect to this server").
+					Options(
+						huh.NewOption("SSH Key (IdentityFile) [Recommended]", authKey),
+						huh.NewOption("Password only (disables pubkey & agent to prevent lockouts)", authPassword),
+						huh.NewOption("Standard / Default (agent keys with password fallback)", authDefault),
+					).
+					Value(&w.auth),
+			).Title("Step 2: Authentication").Description(text.authDesc)
+		}},
+		{group: func() *huh.Group {
+			return huh.NewGroup(
+				huh.NewSelect[string]().Key("key").
+					Title("Select Private Key").
+					Description("Choose an existing key in ~/.ssh or generate a new one").
+					Options(w.keyOptions...).
+					Value(&w.keyChoice),
+			).Title("Step 3: Private Key Selection").Description("Select which SSH key to use for authentication")
+		}, hide: noKey},
+		{group: func() *huh.Group {
+			return huh.NewGroup(customKeyInput).
+				Title("Custom Key Path").Description("Specify the absolute or ~-relative path to your key")
+		}, hide: func() bool { return noKey() || w.keyChoice != keyCustom }},
+		{group: func() *huh.Group {
+			return huh.NewGroup(newKeyInput).
+				Title("Generate Ed25519 Key").Description("New high-security elliptic curve key pair, created once you save")
+		}, hide: func() bool { return noKey() || w.keyChoice != keyGenerate }},
+		{group: func() *huh.Group {
+			return huh.NewGroup(
+				huh.NewConfirm().Key("save").
+					Title("Save this host?").
+					Description("Nothing is written until you save").
+					Affirmative("Save").Negative("Cancel").
+					Value(&w.save).
+					Validate(forward(w, func(save bool) error {
+						if !save {
+							return nil
+						}
+						return w.checkAnswers()
+					})),
+			).Title("Step 4: Save")
+		}},
+	}
+}
+
+func (w *hostWizard) wizardForm(theme huh.Theme, steps []wizardStep) *huh.Form {
+	groups := make([]*huh.Group, len(steps))
+	for i, st := range steps {
+		g := st.group()
+		if st.hide != nil {
+			g = g.WithHideFunc(st.hide)
+		}
+		groups[i] = g
+	}
+	w.form = huh.NewForm(groups...).WithTheme(theme).WithKeyMap(formKeyMap()).WithProgramOptions(tea.WithFilter(w.filter))
 	return w.form
 }
 
+// newForm puts the wizard's pages into one form, so Shift+Tab goes back to
+// any earlier page and Esc cancels from any of them. The key pages show only
+// when the answers before them ask for a key.
+func (w *hostWizard) newForm(theme huh.Theme) *huh.Form {
+	return w.wizardForm(theme, w.wizardSteps(theme))
+}
+
 // run asks every page; choosing Cancel on the last page counts as
-// cancelling, like Esc.
+// cancelling, like Esc. Under accessible mode, visible pages are asked
+// one at a time via plain line-by-line prompts.
 func (w *hostWizard) run(theme huh.Theme) error {
-	if err := w.newForm(theme).Run(); err != nil {
+	steps := w.wizardSteps(theme)
+	if accessible() {
+		for _, st := range steps {
+			if st.hide != nil && st.hide() {
+				continue
+			}
+			form := huh.NewForm(st.group()).WithTheme(theme).WithKeyMap(formKeyMap()).WithAccessible(true)
+			form = form.WithInput(getLineReader()).WithOutput(sharedOut)
+			if err := form.Run(); err != nil {
+				return err
+			}
+		}
+		if !w.save {
+			return huh.ErrUserAborted
+		}
+		return nil
+	}
+	if err := w.wizardForm(theme, steps).Run(); err != nil {
 		return err
 	}
 	if !w.save {
@@ -681,14 +821,18 @@ func printCancelled() {
 // confirm asks a yes/no question; an aborted prompt counts as "no".
 func confirm(group, title, description string, theme huh.Theme) bool {
 	var ok bool
-	err := huh.NewForm(
+	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title(title).
 				Description(description).
 				Value(&ok),
 		).Title(group),
-	).WithTheme(theme).WithKeyMap(formKeyMap()).Run()
+	).WithTheme(theme).WithKeyMap(formKeyMap())
+	if accessible() {
+		form = form.WithAccessible(true).WithInput(getLineReader()).WithOutput(sharedOut)
+	}
+	err := form.Run()
 	return err == nil && ok
 }
 
