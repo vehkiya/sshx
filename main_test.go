@@ -77,3 +77,13 @@ func TestApplyBuildInfo(t *testing.T) {
 		t.Errorf("expected -ldflags versions to take precedence, got %s", Version)
 	}
 }
+
+func TestRunUpdateUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	if code := run([]string{"update", "extra"}, tmpDir); code != 2 {
+		t.Errorf("expected exit code 2 for update with extra arguments, got %d", code)
+	}
+	if code := run([]string{"check-update", "extra"}, tmpDir); code != 2 {
+		t.Errorf("expected exit code 2 for check-update with extra arguments, got %d", code)
+	}
+}

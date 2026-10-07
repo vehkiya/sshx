@@ -233,12 +233,12 @@ type updateCheckMsg struct {
 	isAvailable   bool
 }
 
-func checkUpdateCmd(currentVersion, homeDir string) tea.Cmd {
+func checkUpdateCmd(currentVersion string) tea.Cmd {
 	if update.CheckDisabled(currentVersion) {
 		return nil
 	}
 	return func() tea.Msg {
-		latest, isNewer, err := update.CheckLatestReleaseCached(currentVersion, homeDir)
+		latest, isNewer, err := update.LatestCached(currentVersion)
 		if err != nil || !isNewer {
 			return updateCheckMsg{latestVersion: latest, isAvailable: false}
 		}
@@ -334,7 +334,7 @@ type model struct {
 
 // Init asks for the terminal's background color and checks for a newer release.
 func (m model) Init() tea.Cmd {
-	return tea.Batch(tea.RequestBackgroundColor, checkUpdateCmd(m.version, m.homeDir))
+	return tea.Batch(tea.RequestBackgroundColor, checkUpdateCmd(m.version))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

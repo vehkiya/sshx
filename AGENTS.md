@@ -49,7 +49,7 @@ Before committing or submitting changes, all of the following steps **MUST** pas
   * `tui` → `probe`, `sshconfig`, `ui`, `update`.
   * `wizard` → `sshconfig`, `ui`.
   * `probe` → `sshconfig`.
-  * `update` → `sshconfig`, `ui`.
+  * `update` → `sshconfig`.
   * `sshconfig` and `ui` are leaves with zero internal dependencies.
 * **Interactive Peer Isolation:** `tui` and `wizard` **never** import each other. `tui` presents the host browser and returns an action; `main` dispatches the requested action.
 * **No package imports `main`.**

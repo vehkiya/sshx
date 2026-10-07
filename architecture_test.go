@@ -23,7 +23,7 @@ var layers = map[string][]string{
 	"tui":    {"probe", "sshconfig", "ui", "update"},
 	"wizard": {"sshconfig", "ui"},
 	"probe":  {"sshconfig"},
-	"update": {"sshconfig", "ui"},
+	"update": {"sshconfig"},
 
 	// Leaves with zero internal dependencies
 	"sshconfig": {},

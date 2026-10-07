@@ -156,11 +156,11 @@ jobs:
           trap 'rm -rf "$WORK_DIR"' EXIT
           printf '%s\n' "$SSHX_SIGNING_KEY" > "$WORK_DIR/key.pem"
 
-          # Installed binaries only accept keys listed in trustedSigningKeys, so a key
+          # Installed binaries only accept keys listed in TrustedKeys, so a key
           # missing from that list would publish a release nobody could update to.
           PUBLIC_KEY="$(openssl pkey -in "$WORK_DIR/key.pem" -pubout -outform DER | tail -c 32 | base64 -w0)"
-          if ! grep -qF "\"$PUBLIC_KEY\"" update.go; then
-            echo "::error::The signing key's public key ($PUBLIC_KEY) is not in trustedSigningKeys in update.go."
+          if ! grep -qF "\"$PUBLIC_KEY\"" internal/update/update.go; then
+            echo "::error::The signing key's public key ($PUBLIC_KEY) is not in TrustedKeys in internal/update/update.go."
             exit 1
           fi
 

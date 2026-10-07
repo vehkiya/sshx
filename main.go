@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -119,27 +120,10 @@ func run(args []string, homeDir string) int {
 		return probeHostCLI(args[1], homeDir)
 
 	case "update", "upgrade":
-		force := false
-		checkOnly := false
-		for _, a := range args[1:] {
-			switch a {
-			case "--force", "-f":
-				force = true
-			case "--check", "-c":
-				checkOnly = true
-			}
-		}
-		if checkOnly {
-			return checkForUpdate()
-		}
-		if _, err := update.PerformUpdate(Version, os.Stdout, force); err != nil {
-			fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
-			return 1
-		}
-		return 0
+		return cmdUpdate(args[1:])
 
 	case "check-update":
-		return checkForUpdate()
+		return cmdCheckUpdate(args[1:])
 
 	case "edit":
 		if len(args) > 1 {
@@ -240,11 +224,15 @@ func runTUILoop(homeDir string) int {
 			openEditor(homeDir)
 
 		case "upgrade":
-			updated, err := update.PerformUpdate(Version, os.Stdout, false)
+			installed, err := update.Perform(Version, os.Stdout, false)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\nUpdate error: %v\n", err)
 				pausePrompt()
-			} else if updated {
+			} else if installed != "" {
+				updatedBadge := ui.Badge(" UPDATED ", ui.ColorBlack, ui.ColorGreen)
+				infoStyle := lipgloss.NewStyle().Foreground(ui.ColorCyan).Bold(true)
+				_, _ = lipgloss.Printf("\n%s Successfully updated sshx to %s\n\n", updatedBadge, installed)
+				_, _ = lipgloss.Printf("%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
 				return 0
 			} else {
 				pausePrompt()
@@ -272,14 +260,59 @@ func pausePrompt() {
 	_, _ = reader.ReadString('\n')
 }
 
-func checkForUpdate() int {
-	rel, isNewer, err := update.CheckLatestRelease(Version)
+const updateUsage = "sshx update [--check] [--force]"
+
+func cmdUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var check, force bool
+	fs.BoolVar(&check, "check", false, "only say whether a newer release exists")
+	fs.BoolVar(&check, "c", false, "only say whether a newer release exists")
+	fs.BoolVar(&force, "force", false, "reinstall the latest release even when up to date")
+	fs.BoolVar(&force, "f", false, "reinstall the latest release even when up to date")
+	if err := fs.Parse(args); err != nil || len(fs.Args()) != 0 {
+		fmt.Fprintf(os.Stderr, "Usage: %s\n", updateUsage)
+		return 2
+	}
+	if check {
+		rel, newer, err := update.Latest(Version)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		if newer {
+			fmt.Printf("sshx %s is available (installed: %s). Run `sshx update` to install it.\n", rel.TagName, Version)
+		} else {
+			fmt.Printf("sshx is up to date (%s)\n", Version)
+		}
+		return 0
+	}
+	installed, err := update.Perform(Version, os.Stdout, force)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-	if isNewer {
-		fmt.Printf("Update available: %s -> %s (run 'sshx update' to upgrade)\n", Version, rel.TagName)
+	if installed != "" {
+		updatedBadge := ui.Badge(" UPDATED ", ui.ColorBlack, ui.ColorGreen)
+		infoStyle := lipgloss.NewStyle().Foreground(ui.ColorCyan).Bold(true)
+		_, _ = lipgloss.Printf("\n%s Successfully updated sshx to %s\n\n", updatedBadge, installed)
+		_, _ = lipgloss.Printf("%s Restart sshx to apply the update.\n\n", infoStyle.Render("➜"))
+	}
+	return 0
+}
+
+func cmdCheckUpdate(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintf(os.Stderr, "Usage: sshx check-update\n")
+		return 2
+	}
+	rel, newer, err := update.Latest(Version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if newer {
+		fmt.Printf("sshx %s is available (installed: %s). Run `sshx update` to install it.\n", rel.TagName, Version)
 	} else {
 		fmt.Printf("sshx is up to date (%s)\n", Version)
 	}
