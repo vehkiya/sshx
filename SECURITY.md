@@ -51,6 +51,6 @@ openssl pkeyutl -verify -pubin -inkey sshx-release.pub.pem -rawin -in checksums.
 sha256sum --check --ignore-missing checksums.txt
 ```
 
-**Key rotation (maintainers):** installed binaries only trust the keys listed in `trustedSigningKeys` (`update.go`). Add the new public key there and ship a release still signed with the old key; once users have that release, switch the `SSHX_SIGNING_KEY` secret in the `release` environment to the new key and remove the old one from the list. The release workflow refuses to sign with a key that isn't listed.
+**Key rotation (maintainers):** installed binaries only trust the keys listed in `TrustedKeys` (`internal/update/update.go`). Add the new public key there and ship a release still signed with the old key; once users have that release, switch the `SSHX_SIGNING_KEY` secret in the `release` environment to the new key and remove the old one from the list. The release workflow refuses to sign with a key that isn't listed.
 - **Passphrase Protection**: Always protect private keys with strong passphrases and use an SSH agent (or hardware security key) to handle decryption.
 - **Agent Hygiene**: Utilize `AddKeysToAgent yes` with appropriate key lifetimes or OS keychain integration to minimize key exposure in memory.

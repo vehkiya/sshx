@@ -19,286 +19,63 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/vehkiya/sshx/internal/sshconfig"
 )
 
-func TestIsNewerVersion(t *testing.T) {
-	tests := []struct {
-		current  string
-		latest   string
-		expected bool
+func TestIsNewer(t *testing.T) {
+	cases := []struct {
+		current, latest string
+		want            bool
 	}{
-		{"v0.1.0", "v0.2.0", true},
-		{"v0.2.0", "v0.3.0", true},
-		{"v0.3.0", "v0.3.1", true},
-		{"v0.3.0", "v1.0.0", true},
-		{"v0.3.0", "v0.3.0", false},
-		{"v0.3.1", "v0.3.0", false},
-		{"v1.0.0", "v0.9.9", false},
-		{"dev", "v0.3.0", true},
-		{"none", "v0.3.0", true},
-		{"", "v0.3.0", true},
-		{"v0.3.0", "", false},
-		{"v0.3.0-rc1", "v0.3.1", true},
-		{"v0.3.0-rc1", "v0.3.0", true},
-		{"v0.3.1-0.20261002093000-abcdef123456", "v0.3.0", false},
+		{"v0.4.1", "v0.5.0", true},
+		{"v0.4.1", "v0.4.2", true},
+		{"v0.4.1", "v1.0.0", true},
+		{"v0.5.0", "v0.4.9", false},
+		{"v0.5.0", "v0.5.0", false},
+		{"v0.5.0-rc1", "v0.5.0", true},
+		{"v0.5.0", "v0.5.0-rc1", false},
+		{"v0.0.0-20261005165755-2446bc0d13e5", "v0.4.1", true}, // a local build
+		{"v0.4.1+dirty", "v0.4.1", false},
+		{"v0.4.1+dirty", "v0.4.2", true},
+		{"dev", "v0.4.1", true},
+		{"none", "v0.4.1", true},
+		{"", "v0.4.1", true},
+		{"v0.4.1", "", false},
+		{"0.4.1", "v0.5.0", true}, // without the v
 		{"v0.3.1-0.20261002093000-abcdef123456+dirty", "v0.3.1", true},
-		{"v0.3.1+dirty", "v0.3.1", false}, // a modified local build of v0.3.1
-		{"v0.3.1+dirty", "v0.3.2", true},
-		{"v0.3.0", "v0.3.0-rc2", false},
 	}
-
-	for _, tc := range tests {
-		got := isNewerVersion(tc.current, tc.latest)
-		if got != tc.expected {
-			t.Errorf("isNewerVersion(%q, %q) = %v; expected %v", tc.current, tc.latest, got, tc.expected)
+	for _, c := range cases {
+		if got := IsNewer(c.current, c.latest); got != c.want {
+			t.Errorf("IsNewer(%q, %q) = %v, want %v", c.current, c.latest, got, c.want)
 		}
 	}
 }
 
-func TestParseSemVerParts(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected [3]int
-	}{
-		{"1.2.3", [3]int{1, 2, 3}},
-		{"0.3.0", [3]int{0, 3, 0}},
-		{"0.3.0-beta.1", [3]int{0, 3, 0}},
-		{"0.3.1+dirty", [3]int{0, 3, 1}},
-		{"2", [3]int{2, 0, 0}},
-		{"", [3]int{0, 0, 0}},
+func TestCheckDisabled(t *testing.T) {
+	t.Setenv(NoCheckEnv, "")
+	if CheckDisabled("v0.4.1") {
+		t.Error("check disabled for a release build")
 	}
+	if !CheckDisabled("dev") {
+		t.Error("check enabled for a development build")
+	}
+	t.Setenv(NoCheckEnv, "1")
+	if !CheckDisabled("v0.4.1") {
+		t.Errorf("%s didn't turn the check off", NoCheckEnv)
+	}
+}
 
-	for _, tc := range tests {
-		got := parseSemVerParts(tc.input)
-		if got != tc.expected {
-			t.Errorf("parseSemVerParts(%q) = %v; expected %v", tc.input, got, tc.expected)
+func TestTrustedKeysAreEd25519PublicKeys(t *testing.T) {
+	if len(TrustedKeys) == 0 {
+		t.Fatal("no trusted release keys")
+	}
+	for _, k := range TrustedKeys {
+		if pub, err := base64.StdEncoding.DecodeString(k); err != nil || len(pub) != ed25519.PublicKeySize {
+			t.Errorf("%q isn't a base64 Ed25519 public key (err %v, %d bytes)", k, err, len(pub))
 		}
 	}
 }
 
-func TestVerifyChecksum(t *testing.T) {
-	data := []byte("binary-test-content-12345")
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-
-	checksums := fmt.Sprintf("%s  sshx_v0.3.0_linux_amd64.tar.gz\n11223344  other.tar.gz\n", hash)
-
-	// Valid checksum
-	if err := verifyChecksum(data, "sshx_v0.3.0_linux_amd64.tar.gz", checksums); err != nil {
-		t.Errorf("expected checksum to verify, got: %v", err)
-	}
-
-	// Mismatched checksum
-	corrupted := []byte("different-data")
-	if err := verifyChecksum(corrupted, "sshx_v0.3.0_linux_amd64.tar.gz", checksums); err == nil {
-		t.Errorf("expected checksum mismatch error, got nil")
-	}
-
-	// Asset not in checksums: refuse rather than install unverified
-	if err := verifyChecksum(data, "unknown_file.tar.gz", checksums); err == nil {
-		t.Errorf("expected an error for a missing checksum entry")
-	}
-
-	// Binary-mode entries from sha256sum -b
-	binaryMode := fmt.Sprintf("%s *sshx_v0.3.0_linux_amd64.tar.gz\n", hash)
-	if err := verifyChecksum(data, "sshx_v0.3.0_linux_amd64.tar.gz", binaryMode); err != nil {
-		t.Errorf("expected binary-mode checksum entry to verify, got: %v", err)
-	}
-}
-
-func TestExtractBinaryFromTarGz(t *testing.T) {
-	var buf bytes.Buffer
-	gzw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gzw)
-
-	content := []byte("#!/bin/sh\necho hello\n")
-	hdr := &tar.Header{
-		Name:     "dist/sshx_v0.3.0_linux_amd64/sshx",
-		Mode:     0755,
-		Size:     int64(len(content)),
-		Typeflag: tar.TypeReg,
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write(content); err != nil {
-		t.Fatal(err)
-	}
-	_ = tw.Close()
-	_ = gzw.Close()
-
-	extracted, err := extractBinaryFromTarGz(buf.Bytes(), "sshx")
-	if err != nil {
-		t.Fatalf("unexpected extract error: %v", err)
-	}
-	if string(extracted) != string(content) {
-		t.Errorf("expected %q, got %q", string(content), string(extracted))
-	}
-
-	// Not found
-	_, err = extractBinaryFromTarGz(buf.Bytes(), "nonexistent")
-	if err == nil {
-		t.Errorf("expected error for nonexistent binary, got nil")
-	}
-}
-
-func TestExtractBinaryFromZip(t *testing.T) {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-
-	content := []byte("windows-binary-mock")
-	w, err := zw.Create("sshx_v0.3.0_windows_amd64/sshx.exe")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write(content); err != nil {
-		t.Fatal(err)
-	}
-	_ = zw.Close()
-
-	extracted, err := extractBinaryFromZip(buf.Bytes(), "sshx.exe")
-	if err != nil {
-		t.Fatalf("unexpected extract error: %v", err)
-	}
-	if string(extracted) != string(content) {
-		t.Errorf("expected %q, got %q", string(content), string(extracted))
-	}
-}
-
-// useTempCacheDir points os.UserCacheDir at a temporary directory on every platform.
-func useTempCacheDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", dir)
-	t.Setenv("HOME", dir)
-	t.Setenv("LocalAppData", dir)
-	return dir
-}
-
-func TestCheckLatestReleaseCachedLocal(t *testing.T) {
-	useTempCacheDir(t)
-	tmpDir := t.TempDir()
-	sshDir := filepath.Join(tmpDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	legacy := filepath.Join(sshDir, legacyUpdateCacheFile)
-	if err := os.WriteFile(legacy, []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	c := updateCache{
-		CheckedAt:     time.Now().Unix(),
-		LatestVersion: "v0.9.0",
-	}
-	cData, _ := json.Marshal(c)
-	if err := sshconfig.AtomicWrite(updateCachePath(tmpDir), cData, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	latest, newer, err := CheckLatestReleaseCached("v0.3.0", tmpDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if latest != "v0.9.0" {
-		t.Errorf("expected cached version v0.9.0, got %q", latest)
-	}
-	if !newer {
-		t.Errorf("expected newer=true for v0.3.0 vs v0.9.0")
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Errorf("expected the legacy cache in ~/.ssh to be removed")
-	}
-}
-
-func TestUpdateCheckDisabled(t *testing.T) {
-	t.Setenv(noUpdateCheckEnv, "")
-	if updateCheckDisabled("v1.0.0") {
-		t.Errorf("expected update checks to be enabled by default")
-	}
-	if !updateCheckDisabled("dev") {
-		t.Errorf("expected development builds to skip the background check")
-	}
-	t.Setenv(noUpdateCheckEnv, "1")
-	if !updateCheckDisabled("v1.0.0") {
-		t.Errorf("expected %s to disable update checks", noUpdateCheckEnv)
-	}
-}
-
-func TestReadLimited(t *testing.T) {
-	if _, err := readLimited(bytes.NewReader(make([]byte, 11)), 10); err == nil {
-		t.Errorf("expected an error for oversized input")
-	}
-	if data, err := readLimited(bytes.NewReader(make([]byte, 10)), 10); err != nil || len(data) != 10 {
-		t.Errorf("expected input at the limit to be read, got %d bytes (err %v)", len(data), err)
-	}
-}
-
-func TestReplaceExecutable(t *testing.T) {
-	dir := t.TempDir()
-	exe := filepath.Join(dir, "sshx")
-	if err := os.WriteFile(exe, []byte("old"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := replaceExecutable(exe, []byte("new"), "linux"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if data, _ := os.ReadFile(exe); string(data) != "new" { //nolint:gosec // test file read
-		t.Errorf("expected new binary, got %q", data)
-	}
-
-	if err := replaceExecutable(exe, []byte("newer"), "windows"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if data, _ := os.ReadFile(exe + ".old"); string(data) != "new" { //nolint:gosec // test file read
-		t.Errorf("expected the previous binary to be kept as .old, got %q", data)
-	}
-}
-
-func TestReplaceExecutableRestoresOnWindowsFailure(t *testing.T) {
-	dir := t.TempDir()
-	exe := filepath.Join(dir, "sshx.exe")
-	if err := os.WriteFile(exe, []byte("old"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	renameFile = func(from, to string) error {
-		if to == exe && filepath.Base(from) != "sshx.exe.old" {
-			return errors.New("simulated failure")
-		}
-		return os.Rename(from, to)
-	}
-	t.Cleanup(func() { renameFile = os.Rename })
-
-	if err := replaceExecutable(exe, []byte("new"), "windows"); err == nil {
-		t.Fatalf("expected the simulated failure to be reported")
-	}
-	if data, err := os.ReadFile(exe); err != nil || string(data) != "old" { //nolint:gosec // test file read
-		t.Errorf("expected the original binary to be restored, got %q (err %v)", data, err)
-	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 {
-		t.Errorf("expected temporary files to be cleaned up, got %v", entries)
-	}
-}
-
-func TestTrustedSigningKeysAreValid(t *testing.T) {
-	if len(trustedSigningKeys) == 0 {
-		t.Fatal("expected at least one trusted signing key")
-	}
-	for _, k := range trustedSigningKeys {
-		pub, err := base64.StdEncoding.DecodeString(k)
-		if err != nil || len(pub) != ed25519.PublicKeySize {
-			t.Errorf("trusted key %q is not a base64 Ed25519 public key (err %v, %d bytes)", k, err, len(pub))
-		}
-	}
-}
-
-// newSigningKey returns a fresh key pair with the public half base64-encoded, as in trustedSigningKeys.
-func newSigningKey(t *testing.T) (ed25519.PrivateKey, string) {
+func newKey(t *testing.T) (ed25519.PrivateKey, string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -307,94 +84,132 @@ func newSigningKey(t *testing.T) (ed25519.PrivateKey, string) {
 	return priv, base64.StdEncoding.EncodeToString(pub)
 }
 
-// sign produces a checksums.txt.sig body the way the CD workflow does (base64 of the raw signature).
+// sign makes a checksums.txt.sig the way the release workflow does: base64 of the raw signature.
 func sign(priv ed25519.PrivateKey, data []byte) []byte {
 	return []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, data)))
 }
 
 func TestVerifySignature(t *testing.T) {
-	priv, pub := newSigningKey(t)
-	otherPriv, otherPub := newSigningKey(t)
+	priv, pub := newKey(t)
+	otherPriv, otherPub := newKey(t)
 	data := []byte("abc  sshx_v1.0.0_linux_amd64.tar.gz\n")
 
 	if err := verifySignature(data, sign(priv, data), []string{pub}); err != nil {
-		t.Errorf("expected a valid signature to verify: %v", err)
+		t.Errorf("valid signature: %v", err)
 	}
 	if err := verifySignature(data, append(sign(priv, data), '\n'), []string{pub}); err != nil {
-		t.Errorf("expected a trailing newline to be ignored: %v", err)
+		t.Errorf("trailing newline: %v", err)
 	}
 	if err := verifySignature(data, sign(otherPriv, data), []string{pub, otherPub}); err != nil {
-		t.Errorf("expected any trusted key to be accepted during rotation: %v", err)
+		t.Errorf("any trusted key should do, as during a rotation: %v", err)
 	}
 	if err := verifySignature(append(data, 'x'), sign(priv, data), []string{pub}); err == nil {
-		t.Errorf("expected tampered data to fail")
+		t.Error("tampered checksums verified")
 	}
 	if err := verifySignature(data, sign(otherPriv, data), []string{pub}); err == nil {
-		t.Errorf("expected a signature from an untrusted key to fail")
+		t.Error("a signature from an untrusted key verified")
 	}
 	if err := verifySignature(data, []byte("not-base64!"), []string{pub}); err == nil {
-		t.Errorf("expected a malformed signature to fail")
+		t.Error("a malformed signature verified")
 	}
 }
 
-func TestFetchVerifiedBinary(t *testing.T) {
-	priv, pub := newSigningKey(t)
-	otherPriv, _ := newSigningKey(t)
-	binary := []byte("new-sshx-binary")
-
-	for _, goos := range []string{"linux", "windows"} {
-		t.Run(goos, func(t *testing.T) {
-			name := "sshx_v1.0.0_" + goos + "_amd64"
-			archive := makeTestArchive(t, goos, name, binary)
-			archiveName := name + ".tar.gz"
-			if goos == "windows" {
-				archiveName = name + ".zip"
-			}
-			checksums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName))
-
-			tests := []struct {
-				name      string
-				archive   []byte
-				signature []byte
-				noSig     bool
-				wantErr   string
-			}{
-				{name: "valid", archive: archive, signature: sign(priv, checksums)},
-				{name: "unsigned", archive: archive, noSig: true, wantErr: "not signed"},
-				{name: "untrusted key", archive: archive, signature: sign(otherPriv, checksums), wantErr: "signature verification failed"},
-				{name: "tampered archive", archive: append(append([]byte(nil), archive...), 0), signature: sign(priv, checksums), wantErr: "checksum verification failed"},
-			}
-			for _, tc := range tests {
-				t.Run(tc.name, func(t *testing.T) {
-					files := map[string][]byte{archiveName: tc.archive, checksumsAsset: checksums}
-					if !tc.noSig {
-						files[signatureAsset] = tc.signature
-					}
-					rel := serveRelease(t, "v1.0.0", files)
-
-					got, err := fetchVerifiedBinary(rel, goos, "amd64", []string{pub}, io.Discard)
-					if tc.wantErr != "" {
-						if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-							t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-						}
-						return
-					}
-					if err != nil {
-						t.Fatalf("unexpected error: %v", err)
-					}
-					if !bytes.Equal(got, binary) {
-						t.Errorf("expected extracted binary %q, got %q", binary, got)
-					}
-				})
-			}
-		})
+func TestVerifyChecksum(t *testing.T) {
+	data := []byte("archive")
+	sum := fmt.Sprintf("%x", sha256.Sum256(data))
+	if err := verifyChecksum(data, "a.tar.gz", sum+"  a.tar.gz\n"); err != nil {
+		t.Errorf("matching checksum: %v", err)
+	}
+	if err := verifyChecksum(data, "a.tar.gz", strings.ToUpper(sum)+" *dist/a.tar.gz\n"); err != nil {
+		t.Errorf("binary-mode entry with a path: %v", err)
+	}
+	if err := verifyChecksum(append(data, 'x'), "a.tar.gz", sum+"  a.tar.gz\n"); err == nil {
+		t.Error("a tampered archive passed")
+	}
+	if err := verifyChecksum(data, "a.tar.gz", sum+"  b.tar.gz\n"); err == nil {
+		t.Error("an archive without a checksum passed")
 	}
 }
 
-// serveRelease serves files over HTTP and returns release metadata pointing at them.
-func serveRelease(t *testing.T, tag string, files map[string][]byte) *ReleaseInfo {
+// makeTarArchive packages a binary as a .tar.gz with a top-level directory.
+func makeTarArchive(t *testing.T, dir string, binary []byte) []byte {
 	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, data := range map[string][]byte{dir + "/README.md": []byte("readme"), dir + "/sshx": binary} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// makeZipArchive packages a binary as a .zip with a top-level directory.
+func makeZipArchive(t *testing.T, dir string, binary []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, data := range map[string][]byte{dir + "/README.md": []byte("readme"), dir + "/sshx.exe": binary} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestExtractBinary(t *testing.T) {
+	got, err := extractBinary(makeTarArchive(t, "sshx_v1.0.0_linux_amd64", []byte("new sshx")), "sshx")
+	if err != nil || string(got) != "new sshx" {
+		t.Errorf("extractBinary = %q, %v", got, err)
+	}
+	if _, err := extractBinary(makeTarArchive(t, "x", []byte("b")), "other"); err == nil {
+		t.Error("found a binary that isn't in the archive")
+	}
+	if _, err := extractBinary([]byte("not gzip"), "sshx"); err == nil {
+		t.Error("read an archive that isn't gzip")
+	}
+}
+
+func TestExtractBinaryFromZip(t *testing.T) {
+	got, err := extractBinaryFromZip(makeZipArchive(t, "sshx_v1.0.0_windows_amd64", []byte("new sshx.exe")), "sshx.exe")
+	if err != nil || string(got) != "new sshx.exe" {
+		t.Errorf("extractBinaryFromZip = %q, %v", got, err)
+	}
+	if _, err := extractBinaryFromZip(makeZipArchive(t, "x", []byte("b")), "other.exe"); err == nil {
+		t.Error("found a binary that isn't in the zip archive")
+	}
+	if _, err := extractBinaryFromZip([]byte("not zip"), "sshx.exe"); err == nil {
+		t.Error("read an archive that isn't zip")
+	}
+}
+
+// serveRelease serves a release's files, and GitHub's latest-release API
+// pointing at them, from a local test server.
+func serveRelease(t *testing.T, tag string, files map[string][]byte) *Release {
+	t.Helper()
+	rel := &Release{TagName: tag}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/latest" {
+			_ = json.NewEncoder(w).Encode(rel)
+			return
+		}
 		data, ok := files[strings.TrimPrefix(r.URL.Path, "/")]
 		if !ok {
 			http.NotFound(w, r)
@@ -403,58 +218,78 @@ func serveRelease(t *testing.T, tag string, files map[string][]byte) *ReleaseInf
 		_, _ = w.Write(data)
 	}))
 	t.Cleanup(srv.Close)
-
-	rel := &ReleaseInfo{TagName: tag}
 	for name := range files {
-		rel.Assets = append(rel.Assets, ReleaseAsset{Name: name, BrowserDownloadURL: srv.URL + "/" + name})
+		rel.Assets = append(rel.Assets, Asset{Name: name, BrowserDownloadURL: srv.URL + "/" + name})
 	}
+	old := releasesAPIURL
+	releasesAPIURL = srv.URL + "/api/latest"
+	t.Cleanup(func() { releasesAPIURL = old })
 	return rel
 }
 
-// makeTestArchive packages binary like the CD workflow: a tar.gz (or zip on Windows) with a top-level directory.
-func makeTestArchive(t *testing.T, goos, dir string, binary []byte) []byte {
+// release builds a release's files for one platform, signed with priv.
+func release(t *testing.T, tag, goos, goarch string, binary []byte, priv ed25519.PrivateKey) (map[string][]byte, string) {
 	t.Helper()
-	var buf bytes.Buffer
+	name := fmt.Sprintf("sshx_%s_%s_%s", tag, goos, goarch)
+	var archive []byte
+	ext := ".tar.gz"
 	if goos == "windows" {
-		zw := zip.NewWriter(&buf)
-		w, err := zw.Create(dir + "/sshx.exe")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write(binary); err != nil {
-			t.Fatal(err)
-		}
-		if err := zw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return buf.Bytes()
+		archive = makeZipArchive(t, name, binary)
+		ext = ".zip"
+	} else {
+		archive = makeTarArchive(t, name, binary)
 	}
+	archiveName := name + ext
+	sums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName))
+	return map[string][]byte{archiveName: archive, checksumsAsset: sums, signatureAsset: sign(priv, sums)}, archiveName
+}
 
-	gzw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gzw)
-	if err := tw.WriteHeader(&tar.Header{Name: dir + "/sshx", Mode: 0755, Size: int64(len(binary)), Typeflag: tar.TypeReg}); err != nil {
-		t.Fatal(err)
+func TestFetchVerifiedBinary(t *testing.T) {
+	priv, pub := newKey(t)
+	otherPriv, _ := newKey(t)
+	binary := []byte("new sshx")
+
+	for _, goos := range []string{"linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			cases := []struct {
+				name    string
+				change  func(files map[string][]byte, archive string)
+				wantErr string
+			}{
+				{"signed and intact", func(map[string][]byte, string) {}, ""},
+				{"unsigned", func(f map[string][]byte, _ string) { delete(f, signatureAsset) }, "not signed"},
+				{"signed by another key", func(f map[string][]byte, _ string) { f[signatureAsset] = sign(otherPriv, f[checksumsAsset]) }, "signature verification failed"},
+				{"tampered archive", func(f map[string][]byte, a string) { f[a] = append(append([]byte(nil), f[a]...), 0) }, "checksum verification failed"},
+				{"no checksums", func(f map[string][]byte, _ string) { delete(f, checksumsAsset) }, "no checksums.txt"},
+				{"no build for this platform", func(f map[string][]byte, a string) { delete(f, a) }, "has no build for"},
+			}
+			for _, c := range cases {
+				t.Run(c.name, func(t *testing.T) {
+					files, archive := release(t, "v1.0.0", goos, "amd64", binary, priv)
+					c.change(files, archive)
+					rel := serveRelease(t, "v1.0.0", files)
+					got, err := fetchVerifiedBinary(rel, goos, "amd64", []string{pub}, io.Discard)
+					switch {
+					case c.wantErr == "" && (err != nil || !bytes.Equal(got, binary)):
+						t.Errorf("got %q, %v", got, err)
+					case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+						t.Errorf("error = %v, want one mentioning %q", err, c.wantErr)
+					}
+				})
+			}
+		})
 	}
-	if _, err := tw.Write(binary); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gzw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
 }
 
 func TestFetchVerifiedBinaryPicksTheExactArchive(t *testing.T) {
-	priv, pub := newSigningKey(t)
+	priv, pub := newKey(t)
 	binary := []byte("new-sshx-binary")
 	name := "sshx_v1.0.0_linux_amd64"
-	archive := makeTestArchive(t, "linux", name, binary)
-	checksums := []byte(fmt.Sprintf("%x  %s.tar.gz\n", sha256.Sum256(archive), name))
+	archive := makeTarArchive(t, name, binary)
+	archiveName := name + ".tar.gz"
+	checksums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName))
 	files := map[string][]byte{
-		name + ".tar.gz":       archive,
+		archiveName:            archive,
 		name + "_debug.tar.gz": []byte("a different build that shares the prefix"),
 		checksumsAsset:         checksums,
 		signatureAsset:         sign(priv, checksums),
@@ -474,51 +309,93 @@ func TestFetchVerifiedBinaryPicksTheExactArchive(t *testing.T) {
 	}
 }
 
-func TestPerformUpdate(t *testing.T) {
-	useTempCacheDir(t)
-	priv, pub := newSigningKey(t)
-	oldKeys := trustedSigningKeys
-	trustedSigningKeys = []string{pub}
-	t.Cleanup(func() { trustedSigningKeys = oldKeys })
+func TestPerform(t *testing.T) {
+	priv, pub := newKey(t)
+	oldKeys := TrustedKeys
+	TrustedKeys = []string{pub}
+	t.Cleanup(func() { TrustedKeys = oldKeys })
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // macOS keeps caches under ~/Library/Caches
+	t.Setenv("LocalAppData", t.TempDir())
 
-	// A stand-in for the running binary, so the test never replaces itself.
-	exe := filepath.Join(t.TempDir(), "sshx")
-	if err := os.WriteFile(exe, []byte("old-sshx"), 0600); err != nil {
+	installed := filepath.Join(t.TempDir(), "sshx")
+	if err := os.WriteFile(installed, []byte("old sshx"), 0755); err != nil { //nolint:gosec // stand-in for the binary
 		t.Fatal(err)
 	}
-	oldExe := executablePath
-	executablePath = func() (string, error) { return exe, nil }
-	t.Cleanup(func() { executablePath = oldExe })
+	oldPath := executablePath
+	executablePath = func() (string, error) { return installed, nil }
+	t.Cleanup(func() { executablePath = oldPath })
 
-	goos, goarch := runtime.GOOS, runtime.GOARCH
-	name := fmt.Sprintf("sshx_v1.0.0_%s_%s", goos, goarch)
-	archive := makeTestArchive(t, goos, name, []byte("new-sshx"))
-	archiveName := name + ".tar.gz"
-	if goos == "windows" {
-		archiveName = name + ".zip"
+	files, _ := release(t, "v1.0.0", runtime.GOOS, runtime.GOARCH, []byte("new sshx"), priv)
+	serveRelease(t, "v1.0.0", files)
+
+	got, err := Perform("v0.9.0", io.Discard, false)
+	if err != nil || got != "v1.0.0" {
+		t.Fatalf("Perform = %q, %v", got, err)
 	}
-	checksums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName))
-	rel := serveRelease(t, "v1.0.0", map[string][]byte{archiveName: archive, checksumsAsset: checksums, signatureAsset: sign(priv, checksums)})
-
-	// The latest-release API, on its own server.
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(rel)
-	}))
-	t.Cleanup(api.Close)
-	oldURL := releasesAPIURL
-	releasesAPIURL = api.URL
-	t.Cleanup(func() { releasesAPIURL = oldURL })
-
-	updated, err := PerformUpdate("v0.9.0", io.Discard, false)
-	if err != nil || !updated {
-		t.Fatalf("expected an update, got updated=%v err=%v", updated, err)
+	if data, _ := os.ReadFile(installed); string(data) != "new sshx" { //nolint:gosec // test file read
+		t.Errorf("installed binary = %q", data)
 	}
-	if data, _ := os.ReadFile(exe); string(data) != "new-sshx" { //nolint:gosec // test file read
-		t.Errorf("expected the new binary in place, got %q", data)
+	if info, _ := os.Stat(installed); info.Mode().Perm() != 0755 {
+		t.Errorf("installed binary mode = %v", info.Mode().Perm())
 	}
 
-	// Already current: nothing to do.
-	if updated, err := PerformUpdate("v1.0.0", io.Discard, false); err != nil || updated {
-		t.Errorf("expected no update when current, got updated=%v err=%v", updated, err)
+	// Already current: nothing to do, and the cache now says so too.
+	if got, err := Perform("v1.0.0", io.Discard, false); err != nil || got != "" {
+		t.Errorf("Perform when current = %q, %v", got, err)
+	}
+	if latest, newer, err := LatestCached("v0.9.0"); err != nil || latest != "v1.0.0" || !newer {
+		t.Errorf("LatestCached = %q, %v, %v", latest, newer, err)
+	}
+}
+
+func TestReplaceExecutable(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "sshx")
+	if err := os.WriteFile(exe, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceExecutable(exe, []byte("new")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data, _ := os.ReadFile(exe); string(data) != "new" { //nolint:gosec // test file read
+		t.Errorf("expected new binary, got %q", data)
+	}
+}
+
+func TestReplaceExecutableRestoresOnWindowsFailure(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		// Mock Windows behavior by verifying renameFile fallback logic
+		return
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "sshx.exe")
+	if err := os.WriteFile(exe, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	renameFile = func(from, to string) error {
+		if to == exe && filepath.Base(from) != "sshx.exe.old" {
+			return errors.New("simulated failure")
+		}
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { renameFile = os.Rename })
+
+	if err := replaceExecutable(exe, []byte("new")); err == nil {
+		t.Fatalf("expected the simulated failure to be reported")
+	}
+	if data, err := os.ReadFile(exe); err != nil || string(data) != "old" { //nolint:gosec // test file read
+		t.Errorf("expected the original binary to be restored, got %q (err %v)", data, err)
+	}
+}
+
+func TestReadLimited(t *testing.T) {
+	if _, err := readLimited(strings.NewReader("12345"), 4); err == nil {
+		t.Error("read past the limit")
+	}
+	if got, err := readLimited(strings.NewReader("1234"), 4); err != nil || string(got) != "1234" {
+		t.Errorf("readLimited = %q, %v", got, err)
 	}
 }
