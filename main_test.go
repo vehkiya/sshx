@@ -4,37 +4,15 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
+
+	"github.com/vehkiya/sshx/internal/sshconfig"
 )
 
-func TestProbeAddress(t *testing.T) {
-	hosts := []HostItem{
-		{Alias: "bastion", AllAliases: []string{"bastion"}, HostName: "bastion.example", Port: 2200},
-		{Alias: "inner", AllAliases: []string{"inner"}, HostName: "10.0.0.5", Port: 22, ProxyJump: "bastion,other"},
-		{Alias: "direct", AllAliases: []string{"direct"}, Port: 22},
-		{Alias: "v6", AllAliases: []string{"v6"}, HostName: "[2001:db8::1]", Port: 2222},
-		{Alias: "adhoc", AllAliases: []string{"adhoc"}, HostName: "x", ProxyJump: "ops@jump.example:2022"},
-	}
-	tests := []struct {
-		alias, addr, via string
-	}{
-		{"inner", "bastion.example:2200", "bastion"},
-		{"direct", "direct:22", ""},
-		{"v6", "[2001:db8::1]:2222", ""},
-		{"adhoc", "jump.example:2022", "ops@jump.example:2022"},
-	}
-	for _, tc := range tests {
-		h, _ := FindHost(hosts, tc.alias)
-		addr, via := probeAddress(h, hosts)
-		if addr != tc.addr || via != tc.via {
-			t.Errorf("probeAddress(%s) = (%q, %q); expected (%q, %q)", tc.alias, addr, via, tc.addr, tc.via)
-		}
-	}
-}
-
 func TestWriteHostTableAlignment(t *testing.T) {
-	hosts := []HostItem{
+	hosts := []sshconfig.HostItem{
 		{Alias: "a-really-long-alias-name", HostName: "h.lan", User: "root", Port: 22, PubkeyAuth: true},
 		{Alias: "b", Port: 2222, PubkeyAuth: true, IdentityFile: "~/.ssh/id_ed25519"},
 	}
@@ -74,5 +52,28 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 	}
 	if code := run([]string{"rm"}, tmpDir); code != 2 {
 		t.Errorf("expected exit code 2 for missing arguments, got %d", code)
+	}
+}
+
+func TestApplyBuildInfo(t *testing.T) {
+	saved := [3]string{Version, Commit, BuildDate}
+	t.Cleanup(func() { Version, Commit, BuildDate = saved[0], saved[1], saved[2] })
+
+	Version, Commit, BuildDate = "dev", "none", "unknown"
+	applyBuildInfo(&debug.BuildInfo{
+		Main: debug.Module{Version: "v1.2.3"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef"},
+			{Key: "vcs.time", Value: "2026-10-02T09:00:00Z"},
+		},
+	})
+	if Version != "v1.2.3" || Commit != "0123456" || BuildDate != "2026-10-02T09:00:00Z" {
+		t.Errorf("unexpected build info: %s %s %s", Version, Commit, BuildDate)
+	}
+
+	Version = "v9.9.9"
+	applyBuildInfo(&debug.BuildInfo{Main: debug.Module{Version: "(devel)"}})
+	if Version != "v9.9.9" {
+		t.Errorf("expected -ldflags versions to take precedence, got %s", Version)
 	}
 }

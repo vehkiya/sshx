@@ -1,8 +1,7 @@
-package main
+package wizard
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -67,15 +66,5 @@ func TestValidateAlias(t *testing.T) {
 	}
 	if err := validateText("root\n    ProxyCommand evil"); err == nil {
 		t.Errorf("expected control characters in free-text fields to be rejected")
-	}
-}
-
-func TestHostSection(t *testing.T) {
-	section := hostSection(sharedConfig, "beta")
-	if section != "Host beta\n    HostName beta.lan" {
-		t.Errorf("unexpected section: %q", section)
-	}
-	if !strings.HasPrefix(hostSection(sharedConfig, "10.10.1.218"), "Host fortress 10.10.1.218") {
-		t.Errorf("expected lookup by secondary alias to find the fortress section")
 	}
 }

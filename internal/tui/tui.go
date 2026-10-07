@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"encoding/base64"
@@ -12,6 +12,48 @@ import (
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/vehkiya/sshx/internal/probe"
+	"github.com/vehkiya/sshx/internal/sshconfig"
+	"github.com/vehkiya/sshx/internal/ui"
+	"github.com/vehkiya/sshx/internal/update"
+)
+
+type HostItem = sshconfig.HostItem
+
+var (
+	colorPurple    = ui.ColorPurple
+	colorCoral     = ui.ColorCoral
+	colorCyan      = ui.ColorCyan
+	colorGreen     = ui.ColorGreen
+	colorAmber     = ui.ColorAmber
+	colorRed       = ui.ColorRed
+	colorWhite     = ui.ColorWhite
+	colorBlack     = ui.ColorBlack
+	colorLightGray = ui.ColorLightGray
+	colorGray      = ui.ColorGray
+	colorDim       = ui.ColorDim
+	colorDarkGray  = ui.ColorDarkGray
+	colorSlate     = ui.ColorSlate
+)
+
+func highlightConfigBlock(block string) string {
+	return ui.HighlightConfigBlock(block)
+}
+
+func probeAddress(h HostItem, hosts []HostItem) (addr, via string) {
+	return probe.Address(h, hosts)
+}
+
+func probeTCP(addr string, timeout time.Duration) (time.Duration, error) {
+	return probe.TCP(addr, timeout)
+}
+
+var (
+	LoadAllHosts             = sshconfig.LoadAllHosts
+	ResolveHostConfigFile    = sshconfig.ResolveHostConfigFile
+	DeleteHostFromConfigFile = sshconfig.DeleteHostFromConfigFile
+	HasHost                  = sshconfig.HasHost
+	shortenHome              = sshconfig.ShortenHome
 )
 
 var (
@@ -192,11 +234,11 @@ type updateCheckMsg struct {
 }
 
 func checkUpdateCmd(currentVersion, homeDir string) tea.Cmd {
-	if updateCheckDisabled(currentVersion) {
+	if update.CheckDisabled(currentVersion) {
 		return nil
 	}
 	return func() tea.Msg {
-		latest, isNewer, err := CheckLatestReleaseCached(currentVersion, homeDir)
+		latest, isNewer, err := update.CheckLatestReleaseCached(currentVersion, homeDir)
 		if err != nil || !isNewer {
 			return updateCheckMsg{latestVersion: latest, isAvailable: false}
 		}
@@ -287,11 +329,12 @@ type model struct {
 	pingStatus      map[string]string
 	updateAvailable string
 	homeDir         string
+	version         string
 }
 
 // Init asks for the terminal's background color and checks for a newer release.
 func (m model) Init() tea.Cmd {
-	return tea.Batch(tea.RequestBackgroundColor, checkUpdateCmd(Version, m.homeDir))
+	return tea.Batch(tea.RequestBackgroundColor, checkUpdateCmd(m.version, m.homeDir))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -689,7 +732,7 @@ func renderInspector(h HostItem, homeDir string, showRaw bool, pingStatus, statu
 }
 
 // RunTUI launches the interactive host browser and returns the selected alias and requested action.
-func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, action string, err error) {
+func RunTUI(homeDir string, version string, initialAlias ...string) (selectedAlias string, action string, err error) {
 	hosts, err := LoadAllHosts(homeDir)
 	if err != nil {
 		return "", "", err
@@ -732,6 +775,7 @@ func RunTUI(homeDir string, initialAlias ...string) (selectedAlias string, actio
 		list:       l,
 		keys:       keys,
 		homeDir:    homeDir,
+		version:    version,
 		width:      80,
 		height:     20,
 		pingStatus: make(map[string]string),

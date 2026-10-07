@@ -1,4 +1,4 @@
-package main
+package sshconfig
 
 import (
 	"bytes"
@@ -199,9 +199,13 @@ func isUnindentedComment(line string) bool {
 	return strings.HasPrefix(line, "#")
 }
 
-// isConcreteAlias reports whether a Host pattern names a single host rather than a wildcard or negation.
-func isConcreteAlias(p string) bool {
+// IsConcreteAlias reports whether a Host pattern names a single host rather than a wildcard or negation.
+func IsConcreteAlias(p string) bool {
 	return !strings.ContainsAny(p, "*?!")
+}
+
+func isConcreteAlias(p string) bool {
+	return IsConcreteAlias(p)
 }
 
 func splitPatterns(value string) []string {
@@ -732,6 +736,17 @@ func CloneHost(content string, prev, next HostEntry) string {
 	return next.Format()
 }
 
+// HostSection returns the text of the first Host section listing alias.
+func HostSection(content, alias string) string {
+	lines := strings.Split(content, "\n")
+	for _, b := range parseHostBlocks(lines) {
+		if b.has(alias) {
+			return strings.Join(lines[b.start:b.end], "\n")
+		}
+	}
+	return ""
+}
+
 // ResolveHostConfigFile finds the configuration file containing the specified host alias.
 func ResolveHostConfigFile(alias, homeDir string, targetConfigFile ...string) (string, error) {
 	if len(targetConfigFile) > 0 && targetConfigFile[0] != "" {
@@ -873,8 +888,8 @@ func DiscoverKeys(sshDir string) ([]string, error) {
 	return keys, nil
 }
 
-// expandHome turns a leading "~" into homeDir.
-func expandHome(path, homeDir string) string {
+// ExpandHome turns a leading "~" into homeDir.
+func ExpandHome(path, homeDir string) string {
 	if strings.HasPrefix(path, "~/") {
 		return filepath.Join(homeDir, path[2:])
 	}
@@ -884,8 +899,8 @@ func expandHome(path, homeDir string) string {
 	return path
 }
 
-// shortenHome rewrites a path inside homeDir to the "~/" form used in SSH configs.
-func shortenHome(path, homeDir string) string {
+// ShortenHome rewrites a path inside homeDir to the "~/" form used in SSH configs.
+func ShortenHome(path, homeDir string) string {
 	if homeDir == "" {
 		return path
 	}
@@ -897,6 +912,10 @@ func shortenHome(path, homeDir string) string {
 		return "~/" + filepath.ToSlash(path[len(prefix):])
 	}
 	return path
+}
+
+func shortenHome(path, homeDir string) string {
+	return ShortenHome(path, homeDir)
 }
 
 // BackupPath is where WriteConfigFile keeps the previous version of a config
