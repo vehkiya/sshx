@@ -115,8 +115,12 @@ type completion struct {
 }
 
 // completePaths makes a wizard input complete paths as they're typed, shown
-// as ghost text that Tab accepts (completeOnTab), as in a shell.
+// as ghost text that Tab accepts (completeOnTab), as in a shell. Accessible
+// prompts stay plain.
 func (w *hostWizard) completePaths(in *huh.Input, value *string, c pathCompleter) *huh.Input {
+	if accessible() {
+		return in
+	}
 	if w.completions == nil {
 		w.completions = map[string]completion{}
 	}

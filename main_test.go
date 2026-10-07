@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -85,5 +86,133 @@ func TestRunUpdateUsage(t *testing.T) {
 	}
 	if code := run([]string{"check-update", "extra"}, tmpDir); code != 2 {
 		t.Errorf("expected exit code 2 for check-update with extra arguments, got %d", code)
+	}
+}
+
+func TestAccessibleNeverOpensBrowser(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(sshDir, "config")
+	if err := os.WriteFile(cfg, []byte("Host test\n    HostName test.lan\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ACCESSIBLE", "1")
+
+	// run(nil) with ACCESSIBLE set should run cmdLs and never enter runTUILoop.
+	code := run(nil, tmpDir)
+	if code != 0 {
+		t.Fatalf("run(nil) under ACCESSIBLE exit status = %d, want 0", code)
+	}
+}
+
+func TestLsJSONOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	configDir := filepath.Join(sshDir, "config.d")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	mainConfig := `Include config.d/*
+
+Host keyhost
+    HostName key.lan
+    User deploy
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+
+Host pwhost
+    HostName pw.lan
+    User admin
+    Port 2222
+    PubkeyAuthentication no
+
+Host defaulthost
+    HostName def.lan
+`
+	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(mainConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	extraPath := filepath.Join(configDir, "extra.conf")
+	extraConfig := `Host inchost
+    HostName inc.lan
+    User worker
+    Port 2200
+`
+	if err := os.WriteFile(extraPath, []byte(extraConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	code := cmdLs([]string{"--json"}, &buf, tmpDir)
+	if code != 0 {
+		t.Fatalf("cmdLs --json exited with %d, want 0", code)
+	}
+
+	var hosts []hostJSON
+	if err := json.Unmarshal(buf.Bytes(), &hosts); err != nil {
+		t.Fatalf("failed to parse JSON output: %v\nOutput:\n%s", err, buf.String())
+	}
+
+	if len(hosts) != 4 {
+		t.Fatalf("expected 4 hosts, got %d: %+v", len(hosts), hosts)
+	}
+
+	byAlias := make(map[string]hostJSON)
+	for _, h := range hosts {
+		byAlias[h.Alias] = h
+	}
+
+	// 1. keyhost
+	kh, ok := byAlias["keyhost"]
+	if !ok || kh.HostName != "key.lan" || kh.User != "deploy" || kh.Port != 22 ||
+		kh.IdentityFile != "~/.ssh/id_ed25519" || kh.Auth != "key" || kh.ConfigFile != filepath.Join(sshDir, "config") {
+		t.Errorf("keyhost JSON = %+v", kh)
+	}
+
+	// 2. pwhost
+	ph, ok := byAlias["pwhost"]
+	if !ok || ph.HostName != "pw.lan" || ph.User != "admin" || ph.Port != 2222 ||
+		ph.Auth != "password" || ph.ConfigFile != filepath.Join(sshDir, "config") {
+		t.Errorf("pwhost JSON = %+v", ph)
+	}
+
+	// 3. defaulthost
+	dh, ok := byAlias["defaulthost"]
+	if !ok || dh.HostName != "def.lan" || dh.Auth != "default" || dh.ConfigFile != filepath.Join(sshDir, "config") {
+		t.Errorf("defaulthost JSON = %+v", dh)
+	}
+
+	// 4. inchost from included file
+	ih, ok := byAlias["inchost"]
+	if !ok || ih.HostName != "inc.lan" || ih.User != "worker" || ih.Port != 2200 ||
+		ih.ConfigFile != extraPath {
+		t.Errorf("inchost JSON = %+v", ih)
+	}
+}
+
+func TestLsJSONEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	code := cmdLs([]string{"--json"}, &buf, tmpDir)
+	if code != 0 {
+		t.Fatalf("cmdLs --json exited with %d, want 0", code)
+	}
+	if strings.TrimSpace(buf.String()) != "[]" {
+		t.Errorf("expected empty array '[]', got %q", buf.String())
+	}
+}
+
+func TestLsUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	if code := run([]string{"ls", "--bogus"}, tmpDir); code != 2 {
+		t.Errorf("expected exit code 2 for ls --bogus, got %d", code)
+	}
+	if code := run([]string{"ls", "extra"}, tmpDir); code != 2 {
+		t.Errorf("expected exit code 2 for ls extra, got %d", code)
 	}
 }
