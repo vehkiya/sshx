@@ -38,7 +38,8 @@ It provides an intuitive dual-pane terminal interface to search, inspect, connec
   * Understands both `Key Value` and `Key=Value` syntax, quoted values, and nested `Include` directives, plus fragments in `~/.ssh/config.d/*`.
 * **Instant CLI Shortcuts**:
   * Connect directly by alias: `sshx <alias>`, or run a remote command: `sshx <alias> uptime`. ssh's exit code is passed through.
-  * Non-interactive target parsing: `sshx add user@192.168.1.100:2222 prod-server`.
+  * Non-interactive target parsing: `sshx add user@192.168.1.100:2222 prod-server` or with multiple aliases `sshx add 192.168.1.100 host1 host2`.
+  * Support for multiple hostnames & IP on the same connection, so `ssh hostname1`, `ssh hostname2`, and `ssh <IP>` all share the same credentials.
   * Zero external runtime dependencies — single static binary.
 
 ---
@@ -167,8 +168,8 @@ sshx connect admin@10.0.0.5
 # Interactively add a new SSH host
 sshx add
 
-# Pre-populate connection target and alias
-sshx add admin@10.0.0.5:2202 backup-node
+# Pre-populate connection target and aliases (e.g. hostname1, hostname2, and IP)
+sshx add admin@10.0.0.5:2202 backup-node backup.lan
 
 # Interactively edit an existing SSH host
 sshx edit prod-server

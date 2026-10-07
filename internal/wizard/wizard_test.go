@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -311,4 +312,117 @@ func TestAccessibleDeleteHostPrompt(t *testing.T) {
 		t.Errorf("host tokeep should not have been deleted")
 	}
 	ResetIO()
+}
+
+func TestAccessibleAddHostWizardMultipleAliasesWithIP(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ACCESSIBLE", "1")
+
+	// Piped answers:
+	// HostName: 192.168.1.100
+	// Aliases: hostname1 hostname2
+	// User: ubuntu
+	// Port: 22
+	// ProxyJump: (blank)
+	// Auth: 2 (Password only)
+	// Save: y
+	in := script(
+		"192.168.1.100",
+		"hostname1 hostname2",
+		"ubuntu",
+		"22",
+		"",
+		"2",
+		"y",
+	)
+	var out bytes.Buffer
+	SetIO(strings.NewReader(in), &out)
+	defer ResetIO()
+
+	alias, _, err := AddHostWizard("", "", tmpDir, false)
+	if err != nil {
+		t.Fatalf("AddHostWizard failed: %v", err)
+	}
+	if alias != "hostname1" {
+		t.Errorf("primary alias = %q, want hostname1", alias)
+	}
+
+	hosts, err := sshconfig.LoadAllHosts(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("expected 1 host, got %d", len(hosts))
+	}
+	h := hosts[0]
+	// All three: hostname1, hostname2, and IP (192.168.1.100) must be present in AllAliases
+	expectedAliases := []string{"hostname1", "hostname2", "192.168.1.100"}
+	if !slices.Equal(h.AllAliases, expectedAliases) {
+		t.Errorf("AllAliases = %v, want %v", h.AllAliases, expectedAliases)
+	}
+	for _, a := range expectedAliases {
+		if _, ok := sshconfig.FindHost(hosts, a); !ok {
+			t.Errorf("FindHost failed to match alias %q", a)
+		}
+	}
+}
+
+func TestAccessibleEditHostWizardMultipleAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(sshDir, "config")
+	initialConfig := "Host srv1 srv2 192.168.1.100\n    HostName 192.168.1.100\n    User olduser\n    Port 22\n    PasswordAuthentication yes\n"
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ACCESSIBLE", "1")
+
+	// In accessible mode:
+	// HostName: empty (keep 192.168.1.100)
+	// Aliases: "srv1 srv3 192.168.1.100" (replace srv2 with srv3)
+	// User: empty (keep olduser)
+	// Port: empty (keep 22)
+	// ProxyJump: empty
+	// Auth: empty (keep password)
+	// Save: y
+	in := script(
+		"",
+		"srv1 srv3 192.168.1.100",
+		"",
+		"",
+		"",
+		"",
+		"y",
+	)
+	var out bytes.Buffer
+	SetIO(strings.NewReader(in), &out)
+	defer ResetIO()
+
+	edited, err := EditHostWizard("srv1", tmpDir)
+	if err != nil {
+		t.Fatalf("EditHostWizard failed: %v", err)
+	}
+	if edited != "srv1" {
+		t.Errorf("edited alias = %q, want srv1", edited)
+	}
+
+	hosts, err := sshconfig.LoadAllHosts(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, ok := sshconfig.FindHost(hosts, "srv3")
+	if !ok {
+		t.Fatalf("host srv3 not found")
+	}
+	expectedAliases := []string{"srv1", "srv3", "192.168.1.100"}
+	if !slices.Equal(h.AllAliases, expectedAliases) {
+		t.Errorf("AllAliases after edit = %v, want %v", h.AllAliases, expectedAliases)
+	}
 }

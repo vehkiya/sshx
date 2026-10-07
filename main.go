@@ -91,7 +91,7 @@ func run(args []string, homeDir string) int {
 			target = args[1]
 		}
 		if len(args) > 2 {
-			alias = args[2]
+			alias = strings.Join(args[2:], " ")
 		}
 		connectTarget, connectNow, err := wizard.AddHostWizard(target, alias, homeDir, true)
 		if err != nil {
@@ -342,7 +342,7 @@ func printUsage() {
 	fmt.Println("  sshx                          Launch interactive host browser")
 	fmt.Println("  sshx <alias> [command...]     Connect to host (optionally run a remote command)")
 	fmt.Println("  sshx connect <target> [cmd]   Pass any target straight to ssh")
-	fmt.Println("  sshx add [target] [alias]     Interactively add a new SSH host")
+	fmt.Println("  sshx add [target] [alias...]  Interactively add a new SSH host")
 	fmt.Println("  sshx ls [--json]              List all configured SSH hosts")
 	fmt.Println("  sshx rm <alias>               Remove a host from its SSH config file")
 	fmt.Println("  sshx edit [alias]             Edit host in wizard, or open ~/.ssh/config in $EDITOR")
@@ -374,13 +374,14 @@ const lsUsage = "sshx ls [--json]"
 
 // hostJSON is the machine-readable representation of a host for `sshx ls --json`.
 type hostJSON struct {
-	Alias        string `json:"alias"`
-	HostName     string `json:"hostName"`
-	User         string `json:"user"`
-	Port         int    `json:"port"`
-	IdentityFile string `json:"identityFile"`
-	Auth         string `json:"auth"`
-	ConfigFile   string `json:"configFile"`
+	Alias        string   `json:"alias"`
+	Aliases      []string `json:"aliases,omitempty"`
+	HostName     string   `json:"hostName"`
+	User         string   `json:"user"`
+	Port         int      `json:"port"`
+	IdentityFile string   `json:"identityFile"`
+	Auth         string   `json:"auth"`
+	ConfigFile   string   `json:"configFile"`
 }
 
 func hostAuth(h sshconfig.HostItem) string {
@@ -421,8 +422,13 @@ func cmdLs(args []string, w io.Writer, homeDir string) int {
 func printHostsJSON(w io.Writer, hosts []sshconfig.HostItem) int {
 	out := make([]hostJSON, len(hosts))
 	for i, h := range hosts {
+		var aliases []string
+		if len(h.AllAliases) > 1 {
+			aliases = h.AllAliases
+		}
 		out[i] = hostJSON{
 			Alias:        h.Alias,
+			Aliases:      aliases,
 			HostName:     h.HostName,
 			User:         h.User,
 			Port:         h.Port,

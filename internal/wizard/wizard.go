@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image/color"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -189,17 +190,17 @@ type hostFormText struct {
 var hostFormTexts = map[wizardMode]hostFormText{
 	wizardAdd: {
 		step: "Step 1: Host Details", stepDesc: "Enter target server connection parameters", authDesc: "Select your authentication strategy",
-		aliasTitle: "Host Alias", aliasDesc: "Nickname used with ssh <alias> and sshx", aliasPlaceholder: "e.g. prod-server",
+		aliasTitle: "Host Aliases", aliasDesc: "Aliases and hostnames used with ssh (space-separated, e.g. hostname1 hostname2 192.168.1.100)", aliasPlaceholder: "e.g. prod-server prod.lan 192.168.1.100",
 		hostDesc: "FQDN or IP address of the remote host", hostPlaceholder: "e.g. 192.168.1.100 or server.example.com",
 	},
 	wizardEdit: {
 		step: "Step 1: Edit Host Details", stepDesc: "Update target connection parameters", authDesc: "Select authentication strategy",
-		aliasTitle: "Host Alias", aliasDesc: "Nickname used with ssh <alias> and sshx", aliasPlaceholder: "e.g. prod-server",
+		aliasTitle: "Host Aliases", aliasDesc: "Aliases and hostnames used with ssh (space-separated)", aliasPlaceholder: "e.g. prod-server prod.lan 192.168.1.100",
 		hostDesc: "FQDN or IP address of the remote host", hostPlaceholder: "e.g. 192.168.1.100 or server.example.com",
 	},
 	wizardClone: {
 		step: "Step 1: Duplicate Host Parameters", stepDesc: "Customize details for the cloned host", authDesc: "Select authentication strategy",
-		aliasTitle: "New Host Alias", aliasDesc: "Unique nickname for this duplicated host", aliasPlaceholder: "e.g. prod-server-backup",
+		aliasTitle: "New Host Aliases", aliasDesc: "Unique nicknames/aliases for this duplicated host (space-separated)", aliasPlaceholder: "e.g. prod-server-backup prod.lan 192.168.1.101",
 		hostDesc: "FQDN or IP address of the target server", hostPlaceholder: "e.g. 192.168.1.101",
 	},
 }
@@ -272,7 +273,7 @@ func validateHostName(s string) error {
 		return errors.New("hostname is required")
 	}
 	if strings.ContainsAny(s, " \t") {
-		return errors.New("hostname cannot contain spaces")
+		return errors.New("hostname cannot contain spaces; enter multiple hostnames or aliases in the Host Aliases field")
 	}
 	return nil
 }
@@ -744,14 +745,35 @@ func (w *hostWizard) offerKeychain(alias string, theme huh.Theme) {
 	})
 }
 
+// isIPAddress reports whether host is an IPv4 or IPv6 address.
+func isIPAddress(host string) bool {
+	return net.ParseIP(strings.Trim(strings.TrimSpace(host), "[]")) != nil
+}
+
 // buildEntry turns form values into a HostEntry. When prev is given and the
 // authentication method is unchanged, prev's authentication settings are kept
 // so an edit only rewrites what the user actually changed.
 func buildEntry(v hostFormValues, identityFile, homeDir string, prev *HostEntry) HostEntry {
 	port, _ := strconv.Atoi(strings.TrimSpace(v.port))
+	aliasFields := strings.Fields(v.alias)
+	hostName := strings.TrimSpace(v.hostName)
+
+	if prev == nil && isIPAddress(hostName) {
+		hasIP := false
+		for _, f := range aliasFields {
+			if strings.EqualFold(f, hostName) {
+				hasIP = true
+				break
+			}
+		}
+		if !hasIP {
+			aliasFields = append(aliasFields, hostName)
+		}
+	}
+
 	e := HostEntry{
-		Alias:     strings.Join(strings.Fields(v.alias), " "),
-		HostName:  strings.TrimSpace(v.hostName),
+		Alias:     strings.Join(aliasFields, " "),
+		HostName:  hostName,
 		User:      strings.TrimSpace(v.user),
 		Port:      port,
 		ProxyJump: strings.TrimSpace(v.proxyJump),
@@ -880,6 +902,17 @@ func AddHostWizard(posTarget, posAlias, homeDir string, promptConnect bool) (ali
 	}
 	if v.alias == "" {
 		v.alias = targetHost
+	} else if isIPAddress(targetHost) {
+		hasIP := false
+		for _, f := range strings.Fields(v.alias) {
+			if strings.EqualFold(f, targetHost) {
+				hasIP = true
+				break
+			}
+		}
+		if !hasIP {
+			v.alias = v.alias + " " + targetHost
+		}
 	}
 
 	theme := customHuhTheme()
