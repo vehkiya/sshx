@@ -218,7 +218,7 @@ func Perform(currentVersion string, out io.Writer, force bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := replaceExecutable(path, binary); err != nil {
+	if err := replaceExecutable(path, binary, runtime.GOOS); err != nil {
 		return "", err
 	}
 	writeCache(rel.TagName)
@@ -417,7 +417,7 @@ func RemoveStaleBinary() {
 // replaceExecutable swaps the file at path for binary, atomically.
 // On Windows, the running binary cannot be overwritten, so it is first
 // moved aside to path+".old" and restored if installing the new binary fails.
-func replaceExecutable(path string, binary []byte) error {
+func replaceExecutable(path string, binary []byte, goos string) error {
 	dir := filepath.Dir(path)
 	randBytes := make([]byte, 4)
 	if _, err := rand.Read(randBytes); err != nil {
@@ -455,7 +455,7 @@ func replaceExecutable(path string, binary []byte) error {
 	}
 
 	oldPath := ""
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		oldPath = path + ".old"
 		_ = os.Remove(oldPath)
 		if err := renameFile(path, oldPath); err != nil {

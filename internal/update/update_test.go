@@ -336,7 +336,8 @@ func TestPerform(t *testing.T) {
 	if data, _ := os.ReadFile(installed); string(data) != "new sshx" { //nolint:gosec // test file read
 		t.Errorf("installed binary = %q", data)
 	}
-	if info, _ := os.Stat(installed); info.Mode().Perm() != 0755 {
+	// Windows has no Unix permission bits to check.
+	if info, _ := os.Stat(installed); runtime.GOOS != "windows" && info.Mode().Perm() != 0755 {
 		t.Errorf("installed binary mode = %v", info.Mode().Perm())
 	}
 
@@ -356,19 +357,22 @@ func TestReplaceExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := replaceExecutable(exe, []byte("new")); err != nil {
+	if err := replaceExecutable(exe, []byte("new"), "linux"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if data, _ := os.ReadFile(exe); string(data) != "new" { //nolint:gosec // test file read
 		t.Errorf("expected new binary, got %q", data)
 	}
+
+	if err := replaceExecutable(exe, []byte("newer"), "windows"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data, _ := os.ReadFile(exe + ".old"); string(data) != "new" { //nolint:gosec // test file read
+		t.Errorf("expected the previous binary to be kept as .old, got %q", data)
+	}
 }
 
 func TestReplaceExecutableRestoresOnWindowsFailure(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		// Mock Windows behavior by verifying renameFile fallback logic
-		return
-	}
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "sshx.exe")
 	if err := os.WriteFile(exe, []byte("old"), 0600); err != nil {
@@ -383,7 +387,7 @@ func TestReplaceExecutableRestoresOnWindowsFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { renameFile = os.Rename })
 
-	if err := replaceExecutable(exe, []byte("new")); err == nil {
+	if err := replaceExecutable(exe, []byte("new"), "windows"); err == nil {
 		t.Fatalf("expected the simulated failure to be reported")
 	}
 	if data, err := os.ReadFile(exe); err != nil || string(data) != "old" { //nolint:gosec // test file read
