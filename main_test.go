@@ -231,12 +231,12 @@ func TestAddCLIWithMultipleAliases(t *testing.T) {
 	// Answers in ACCESSIBLE mode:
 	// HostName: keep default (192.168.1.50)
 	// Aliases: keep default (srv1 srv2 192.168.1.50)
-	// User: keep default
-	// Port: keep default
-	// ProxyJump: keep default
-	// Auth: 2 (password)
+	// User: ubuntu
+	// Port: 22
+	// ProxyJump: (blank)
+	// Auth: 2 (Password only)
 	// Save: y
-	in := strings.Join([]string{"", "", "", "", "", "2", "y"}, "\n") + "\n"
+	in := strings.Join([]string{"", "", "ubuntu", "22", "", "2", "y"}, "\n") + "\n"
 	wizard.SetIO(strings.NewReader(in), io.Discard)
 	defer wizard.ResetIO()
 
