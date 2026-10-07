@@ -3,13 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/vehkiya/sshx/internal/sshconfig"
+	"github.com/vehkiya/sshx/internal/wizard"
 )
 
 func TestWriteHostTableAlignment(t *testing.T) {
@@ -214,5 +217,46 @@ func TestLsUsage(t *testing.T) {
 	}
 	if code := run([]string{"ls", "extra"}, tmpDir); code != 2 {
 		t.Errorf("expected exit code 2 for ls extra, got %d", code)
+	}
+}
+
+func TestAddCLIWithMultipleAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ACCESSIBLE", "1")
+
+	// Answers in ACCESSIBLE mode:
+	// HostName: keep default (192.168.1.50)
+	// Aliases: keep default (srv1 srv2 192.168.1.50)
+	// User: keep default
+	// Port: keep default
+	// ProxyJump: keep default
+	// Auth: 2 (password)
+	// Save: y
+	in := strings.Join([]string{"", "", "", "", "", "2", "y"}, "\n") + "\n"
+	wizard.SetIO(strings.NewReader(in), io.Discard)
+	defer wizard.ResetIO()
+
+	// Run `sshx add 192.168.1.50 srv1 srv2`
+	code := run([]string{"add", "192.168.1.50", "srv1", "srv2"}, tmpDir)
+	if code != 0 {
+		t.Fatalf("run add exited with %d, want 0", code)
+	}
+
+	hosts, err := sshconfig.LoadAllHosts(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("expected 1 host, got %d", len(hosts))
+	}
+	h := hosts[0]
+	for _, expected := range []string{"srv1", "srv2", "192.168.1.50"} {
+		if !slices.Contains(h.AllAliases, expected) {
+			t.Errorf("expected %q in AllAliases %v", expected, h.AllAliases)
+		}
 	}
 }

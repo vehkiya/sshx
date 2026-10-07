@@ -91,8 +91,12 @@ func (h HostItem) FilterValue() string {
 
 // Entry returns the fields of the host that sshx can edit.
 func (h HostItem) Entry() HostEntry {
+	alias := h.Alias
+	if len(h.AllAliases) > 0 {
+		alias = strings.Join(h.AllAliases, " ")
+	}
 	return HostEntry{
-		Alias:          h.Alias,
+		Alias:          alias,
 		HostName:       h.HostName,
 		User:           h.User,
 		Port:           h.Port,
@@ -451,10 +455,35 @@ func parseHosts(content, file string) []HostItem {
 }
 
 // FindHost returns the host that lists alias among its aliases (case-insensitive).
+// If alias contains multiple space-separated aliases, it matches any of them.
 func FindHost(hosts []HostItem, alias string) (HostItem, bool) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return HostItem{}, false
+	}
+
+	// Fast path: single alias (no whitespace), 0 allocations.
+	if !strings.ContainsAny(alias, " \t") {
+		for _, h := range hosts {
+			for _, a := range h.AllAliases {
+				if strings.EqualFold(a, alias) {
+					return h, true
+				}
+			}
+		}
+		return HostItem{}, false
+	}
+
+	// Multiple target tokens: build a set for O(1) matching in a single pass.
+	fields := strings.Fields(alias)
+	targets := make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		targets[strings.ToLower(f)] = struct{}{}
+	}
+
 	for _, h := range hosts {
 		for _, a := range h.AllAliases {
-			if strings.EqualFold(a, alias) {
+			if _, ok := targets[strings.ToLower(a)]; ok {
 				return h, true
 			}
 		}
@@ -652,13 +681,26 @@ func applyEntryChanges(section []string, alias string, prev, next HostEntry) []s
 				patterns = append(patterns, p)
 			}
 		}
+		targetSet := make(map[string]bool)
+		for _, a := range strings.Fields(alias) {
+			targetSet[strings.ToLower(a)] = true
+		}
+		replacedTarget := false
 		for _, p := range splitPatterns(value) {
-			if strings.EqualFold(p, alias) {
-				for _, a := range strings.Fields(next.Alias) {
-					add(a)
+			if targetSet[strings.ToLower(p)] {
+				if !replacedTarget {
+					for _, a := range strings.Fields(next.Alias) {
+						add(a)
+					}
+					replacedTarget = true
 				}
 			} else {
 				add(p)
+			}
+		}
+		if !replacedTarget {
+			for _, a := range strings.Fields(next.Alias) {
+				add(a)
 			}
 		}
 		s[0] = rewriteHostLine(s[0], patterns)
@@ -705,8 +747,9 @@ func applyEntryChanges(section []string, alias string, prev, next HostEntry) []s
 // section's position in the file are all preserved.
 func UpdateHost(content, alias string, prev, next HostEntry) (string, error) {
 	lines := strings.Split(content, "\n")
+	targets := strings.Fields(alias)
 	for _, b := range parseHostBlocks(lines) {
-		if !b.has(alias) {
+		if !b.hasAny(targets) {
 			continue
 		}
 		section := applyEntryChanges(lines[b.start:b.end], alias, prev, next)
@@ -724,12 +767,13 @@ func UpdateHost(content, alias string, prev, next HostEntry) (string, error) {
 // Host line lists only next.Alias. Without a source section it formats next.
 func CloneHost(content string, prev, next HostEntry) string {
 	lines := strings.Split(content, "\n")
+	targets := strings.Fields(prev.Alias)
 	for _, b := range parseHostBlocks(lines) {
-		if !b.has(prev.Alias) {
+		if !b.hasAny(targets) {
 			continue
 		}
 		section := append([]string(nil), lines[b.start:b.end]...)
-		section[0] = rewriteHostLine(section[0], []string{prev.Alias})
+		section[0] = rewriteHostLine(section[0], strings.Fields(next.Alias))
 		section = applyEntryChanges(section, prev.Alias, prev, next)
 		return strings.Join(section, "\n") + "\n"
 	}
@@ -739,8 +783,9 @@ func CloneHost(content string, prev, next HostEntry) string {
 // HostSection returns the text of the first Host section listing alias.
 func HostSection(content, alias string) string {
 	lines := strings.Split(content, "\n")
+	targets := strings.Fields(alias)
 	for _, b := range parseHostBlocks(lines) {
-		if b.has(alias) {
+		if b.hasAny(targets) {
 			return strings.Join(lines[b.start:b.end], "\n")
 		}
 	}
@@ -783,7 +828,7 @@ func FindAliasOwner(homeDir, alias, skipFile, skipAlias string) (string, bool) {
 			if !b.hasAny(targets) {
 				continue
 			}
-			if skipAlias != "" && file == skipFile && b.has(skipAlias) {
+			if skipAlias != "" && file == skipFile && b.hasAny(strings.Fields(skipAlias)) {
 				continue
 			}
 			return file, true

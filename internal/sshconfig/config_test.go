@@ -733,6 +733,68 @@ func TestHostSection(t *testing.T) {
 	}
 }
 
+func TestMultipleAliasesManagement(t *testing.T) {
+	initial := `Host srv1 srv2 192.168.1.50 *.corp.lan
+    HostName 192.168.1.50
+    User ubuntu
+    Port 22
+`
+	hosts := parseHosts(initial, "config")
+	if len(hosts) != 1 {
+		t.Fatalf("expected 1 host, got %d", len(hosts))
+	}
+	h := hosts[0]
+	if len(h.AllAliases) != 3 {
+		t.Fatalf("expected 3 concrete aliases, got %v", h.AllAliases)
+	}
+	entry := h.Entry()
+	if entry.Alias != "srv1 srv2 192.168.1.50" {
+		t.Errorf("expected entry.Alias to preserve all concrete aliases, got %q", entry.Alias)
+	}
+
+	// 1. FindHost matches any alias (single or multi-token, case-insensitive)
+	for _, alias := range []string{"srv1", "SRV1", "srv2", "192.168.1.50", "srv1 srv2", "nonexistent srv2"} {
+		if _, ok := FindHost(hosts, alias); !ok {
+			t.Errorf("FindHost failed for %q", alias)
+		}
+	}
+	for _, alias := range []string{"", "   ", "nonexistent", "foo bar"} {
+		if _, ok := FindHost(hosts, alias); ok {
+			t.Errorf("FindHost unexpectedly matched %q", alias)
+		}
+	}
+
+	// 2. UpdateHost replaces all aliases with new ones and keeps wildcard
+	next := entry
+	next.Alias = "srv1 srv-backup 192.168.1.50"
+	next.User = "deploy"
+	updated, err := UpdateHost(initial, entry.Alias, entry, next)
+	if err != nil {
+		t.Fatalf("UpdateHost failed: %v", err)
+	}
+	expected := `Host srv1 srv-backup 192.168.1.50 *.corp.lan
+    HostName 192.168.1.50
+    User deploy
+    Port 22
+`
+	if updated != expected {
+		t.Errorf("updated:\n%s\nwant:\n%s", updated, expected)
+	}
+
+	// 3. CloneHost copies the block with the new alias
+	clone := entry
+	clone.Alias = "srv-clone"
+	cloned := CloneHost(initial, entry, clone)
+	expectedClone := `Host srv-clone
+    HostName 192.168.1.50
+    User ubuntu
+    Port 22
+`
+	if cloned != expectedClone {
+		t.Errorf("cloned:\n%s\nwant:\n%s", cloned, expectedClone)
+	}
+}
+
 func FuzzInsertRemoveHost(f *testing.F) {
 	f.Add(sharedConfig)
 	f.Add("Host a\n    HostName a\n# trailing\n")

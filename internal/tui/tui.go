@@ -391,7 +391,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				configPath, err := ResolveHostConfigFile(selected.Alias, m.homeDir, selected.ConfigFile)
 				if err == nil {
-					err = DeleteHostFromConfigFile(strings.Join(selected.AllAliases, " "), configPath)
+					aliases := selected.Alias
+					if len(selected.AllAliases) > 0 {
+						aliases = strings.Join(selected.AllAliases, " ")
+					}
+					err = DeleteHostFromConfigFile(aliases, configPath)
 				}
 				if err != nil {
 					m.statusMessage = fmt.Sprintf("✘ Error deleting '%s': %v", selected.Alias, err)
