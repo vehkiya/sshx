@@ -27,9 +27,13 @@ func writeHome(t *testing.T, files map[string]string) string {
 	return home
 }
 
-// needTool skips a test when a tool it runs for real isn't installed.
+// needTool skips a test when a tool it runs for real isn't installed,
+// or when a tool is unsupported/prone to console hangs in headless CI.
 func needTool(t *testing.T, name string) {
 	t.Helper()
+	if runtime.GOOS == "windows" && name == "ssh-keygen" {
+		t.Skip("ssh-keygen interactive prompts hang in headless Windows environments")
+	}
 	if _, err := exec.LookPath(name); err != nil {
 		t.Skipf("%s isn't installed", name)
 	}
