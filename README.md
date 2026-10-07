@@ -9,6 +9,8 @@
 
 It provides an intuitive dual-pane terminal interface to search, inspect, connect, configure, and manage remote servers without manually editing `~/.ssh/config`.
 
+![sshx TUI](assets/screenshot.png)
+
 ---
 
 ## ✨ Features
